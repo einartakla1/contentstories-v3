@@ -357,6 +357,48 @@
   background-color: rgba(0, 0, 0, 0.8);
 }
 
+
+
+Add these CSS classes to your module.css file .errorIndicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 5;
+}
+
+.errorMessage {
+  text-align: center;
+  color: white;
+  max-width: 80%;
+}
+
+.retryButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid white;
+  color: white;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin: 10px auto 0;
+  transition: background 0.2s;
+}
+
+.retryButton:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+
+
 /* Mobile styles */
 @media (max-width: 768px) {
   .videoContainer {
