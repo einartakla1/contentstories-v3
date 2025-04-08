@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { registerVevComponent, useEditorState } from "@vev/react";
-import { Volume2, VolumeOff, Pause, RefreshCw } from 'lucide-react';
+import { Volume2, VolumeOff, Pause } from 'lucide-react';
 import { Helmet } from 'react-helmet';
 import styles from './ContentStoriesV3.module.css';
 
@@ -24,10 +24,6 @@ type Props = {
   titleDisplayTime: number;
   ctaDisplayTime: number;
 };
-
-// Constants for retry mechanism
-const MAX_RETRY_ATTEMPTS = 3;
-const RETRY_DELAY = 2000; // 2 seconds
 
 const formatTime = (seconds: number): string => {
   const minutes = Math.floor(seconds / 60);
@@ -54,29 +50,135 @@ const ContentStoriesV3: React.FC<Props> = ({
   const [seekPercentages, setSeekPercentages] = useState<{ [key: string]: number }>({});
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [isMobile, setIsMobile] = useState(false);
-  // Track title visibility per video
   const [showTitles, setShowTitles] = useState<{ [key: string]: boolean }>({});
-  // Track CTA visibility per video
   const [showCtaElements, setShowCtaElements] = useState<{ [key: string]: boolean }>({});
   const [jwPlayerLoaded, setJwPlayerLoaded] = useState(false);
   const [initializedPlayers, setInitializedPlayers] = useState<Set<string>>(new Set());
   const [pausedPlayers, setPausedPlayers] = useState<Set<string>>(new Set());
   const [titles, setTitles] = useState<{ [key: string]: string }>({});
+  const [safeAreaInsets, setSafeAreaInsets] = useState({
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0
+  });
 
-  // Add new states for loading error tracking
-  const [loadingErrors, setLoadingErrors] = useState<{ [key: string]: boolean }>({});
-  const [retryAttempts, setRetryAttempts] = useState<{ [key: string]: number }>({});
-  const [loadingTimeouts, setLoadingTimeouts] = useState<{ [key: string]: boolean }>({});
+  // OPTIMIZATION 5: Use refs for performance-critical values that don't need to trigger re-renders
+  const playerStatesRef = useRef<{
+    currentTimes: { [key: string]: number };
+    durations: { [key: string]: number };
+    seekPercentages: { [key: string]: number };
+  }>({
+    currentTimes: {},
+    durations: {},
+    seekPercentages: {}
+  });
+
+  // Track if component is mounted to prevent state updates after unmount
+  const isMountedRef = useRef<boolean>(true);
+  // Track pending fetch/init operations
+  const pendingOperationsRef = useRef<{ [key: string]: boolean }>({});
 
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRefs = useRef<{ [key: string]: HTMLDivElement | null }>({});
   const observerRef = useRef<IntersectionObserver | null>(null);
   const playerInstancesRef = useRef<{ [key: string]: any }>({});
-  // Add refs for retry timers
-  const retryTimersRef = useRef<{ [key: string]: number }>({});
-  const loadingTimeoutTimersRef = useRef<{ [key: string]: number }>({});
-
   const { disabled } = useEditorState();
+
+  // OPTIMIZATION 2: Network Resilience - Fetch with retry
+  const fetchWithRetry = async (url: string, retries = 3, delay = 300): Promise<any> => {
+    let lastError;
+
+    for (let i = 0; i < retries; i++) {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP error ${response.status}`);
+        return await response.json();
+      } catch (error) {
+        console.warn(`Fetch attempt ${i + 1} failed for ${url}`, error);
+        lastError = error;
+
+        // Don't wait on the last attempt
+        if (i < retries - 1) {
+          // Wait with exponential backoff
+          await new Promise(r => setTimeout(r, delay * Math.pow(2, i)));
+        }
+      }
+    }
+
+    throw lastError;
+  };
+
+  // OPTIMIZATION 1: Resource Management - Limit active players
+  const limitActivePlayers = (currentIndex: number) => {
+    if (currentIndex === null || mediaIds.length === 0) return;
+
+    // Only keep at most 3 players initialized at any time (current, previous, next)
+    const indicesToKeep = [
+      currentIndex - 1,
+      currentIndex,
+      currentIndex + 1
+    ].filter(idx => idx >= 0 && idx < mediaIds.length);
+
+    // Get media IDs to keep
+    const mediaIdsToKeep = indicesToKeep.map(idx => mediaIds[idx]);
+
+    // Remove players that aren't needed
+    Array.from(initializedPlayers).forEach(id => {
+      if (!mediaIdsToKeep.includes(id)) {
+        try {
+          const player = window.jwplayer(`jwplayer-${id}`);
+          if (player) {
+            player.remove();
+            delete playerInstancesRef.current[id];
+          }
+
+          // Remove from initialized set
+          setInitializedPlayers(prev => {
+            const newSet = new Set([...prev]);
+            newSet.delete(id);
+            return newSet;
+          });
+
+          // Clear any paused state
+          setPausedPlayers(prev => {
+            const newSet = new Set([...prev]);
+            newSet.delete(id);
+            return newSet;
+          });
+        } catch (e) {
+          console.error(`Error cleaning up player ${id}:`, e);
+        }
+      }
+    });
+  };
+
+  // OPTIMIZATION 3: Batch UI state updates
+  const updateVideoUIState = (mediaId: string, position: number, duration: number, isActiveVideo: boolean) => {
+    const percentage = (position / duration) * 100;
+
+    // Always update the ref
+    playerStatesRef.current.currentTimes[mediaId] = position;
+    playerStatesRef.current.durations[mediaId] = duration;
+    playerStatesRef.current.seekPercentages[mediaId] = percentage;
+
+    // ALWAYS update time and seek states for all videos
+    setCurrentTimes(prev => ({ ...prev, [mediaId]: position }));
+    setDurations(prev => ({ ...prev, [mediaId]: duration }));
+    setSeekPercentages(prev => ({ ...prev, [mediaId]: percentage }));
+
+    // Only update title/CTA visibility states if values changed
+    const shouldShowTitle = titleDisplayTime > 0 && position <= titleDisplayTime;
+    const shouldShowCta = ctaDisplayTime > 0 && position >= ctaDisplayTime;
+
+    if (showTitles[mediaId] !== shouldShowTitle) {
+      setShowTitles(prev => ({ ...prev, [mediaId]: shouldShowTitle }));
+    }
+    1
+    if (showCtaElements[mediaId] !== shouldShowCta) {
+      setShowCtaElements(prev => ({ ...prev, [mediaId]: shouldShowCta }));
+    }
+  };
 
   // Debug log for props and URL parameters
   useEffect(() => {
@@ -95,6 +197,25 @@ const ContentStoriesV3: React.FC<Props> = ({
         mediaid: queryMediaId
       }
     });
+
+    // Set mounted ref
+    isMountedRef.current = true;
+
+    // Cleanup on unmount
+    return () => {
+      isMountedRef.current = false;
+
+      // Clear all player instances
+      Object.keys(playerInstancesRef.current).forEach(mediaId => {
+        try {
+          if (playerInstancesRef.current[mediaId]) {
+            window.jwplayer(`jwplayer-${mediaId}`).remove();
+          }
+        } catch (e) {
+          console.error(`Error removing player ${mediaId}:`, e);
+        }
+      });
+    };
   }, [titleDisplayTime, ctaDisplayTime, inputCtaTekst, initialMediaId, initialPlaylistId]);
 
   // Load JW Player script
@@ -107,49 +228,57 @@ const ContentStoriesV3: React.FC<Props> = ({
     const script = document.createElement('script');
     script.src = "https://cdn.jwplayer.com/libraries/VKKKd3wX.js";
     script.async = true;
-    script.onload = () => setJwPlayerLoaded(true);
-    script.onerror = () => {
-      console.error("Failed to load JW Player script. Retrying in 2 seconds.");
-      // Retry loading the script if it fails
-      setTimeout(() => {
-        document.body.removeChild(script);
-        const retryScript = document.createElement('script');
-        retryScript.src = "https://cdn.jwplayer.com/libraries/VKKKd3wX.js";
-        retryScript.async = true;
-        retryScript.onload = () => setJwPlayerLoaded(true);
-        document.body.appendChild(retryScript);
-      }, 2000);
+    script.onload = () => {
+      if (isMountedRef.current) {
+        setJwPlayerLoaded(true);
+      }
     };
     document.body.appendChild(script);
 
     return () => {
-      // Clear all timers when component unmounts
-      Object.values(retryTimersRef.current).forEach(timerId => {
-        window.clearTimeout(timerId);
-      });
+      // Cleanup script if it hasn't loaded yet
+      const existingScript = document.querySelector(`script[src="${script.src}"]`);
+      if (existingScript && existingScript.parentNode) {
+        existingScript.parentNode.removeChild(existingScript);
+      }
+    };
+  }, []);
 
-      Object.values(loadingTimeoutTimersRef.current).forEach(timerId => {
-        window.clearTimeout(timerId);
-      });
+  // Check device type and detect safe areas for notches/dynamic islands
+  useEffect(() => {
+    const handleResize = () => {
+      if (!isMountedRef.current) return;
 
-      // Cleanup players when component unmounts
-      Object.keys(playerInstancesRef.current).forEach(mediaId => {
-        try {
-          if (playerInstancesRef.current[mediaId]) {
-            window.jwplayer(`jwplayer-${mediaId}`).remove();
-            delete playerInstancesRef.current[mediaId];
-          }
-        } catch (e) {
-          console.error(`Error removing player ${mediaId}:`, e);
-        }
+      setIsMobile(window.innerWidth <= 768);
+
+      // Get safe area insets if available in browser
+      const computedStyle = window.getComputedStyle(document.documentElement);
+      const safeTop = parseInt(computedStyle.getPropertyValue('--sat') || '0', 10);
+      const safeRight = parseInt(computedStyle.getPropertyValue('--sar') || '0', 10);
+      const safeBottom = parseInt(computedStyle.getPropertyValue('--sab') || '0', 10);
+      const safeLeft = parseInt(computedStyle.getPropertyValue('--sal') || '0', 10);
+
+      setSafeAreaInsets({
+        top: safeTop || 0,
+        right: safeRight || 0,
+        bottom: safeBottom || 0,
+        left: safeLeft || 0
       });
     };
-  }, [mediaIds, initializedPlayers]);
 
-  // Check device type
-  useEffect(() => {
-    setIsMobile(window.innerWidth <= 768);
-    const handleResize = () => setIsMobile(window.innerWidth <= 768);
+    // Set safe area CSS variables for iOS devices
+    const setIOSSafeAreaVariables = () => {
+      if ('CSS' in window && CSS.supports('top: env(safe-area-inset-top)')) {
+        document.documentElement.style.setProperty('--sat', 'env(safe-area-inset-top)');
+        document.documentElement.style.setProperty('--sar', 'env(safe-area-inset-right)');
+        document.documentElement.style.setProperty('--sab', 'env(safe-area-inset-bottom)');
+        document.documentElement.style.setProperty('--sal', 'env(safe-area-inset-left)');
+      }
+    };
+
+    setIOSSafeAreaVariables();
+    handleResize();
+
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
@@ -163,8 +292,11 @@ const ContentStoriesV3: React.FC<Props> = ({
       }
 
       try {
-        const response = await fetch(`https://cdn.jwplayer.com/v2/playlists/${initialPlaylistId}`);
-        const data = await response.json();
+        // Use fetchWithRetry for better network resilience
+        const data = await fetchWithRetry(`https://cdn.jwplayer.com/v2/playlists/${initialPlaylistId}`);
+
+        if (!isMountedRef.current) return;
+
         let orderedPlaylist = [...data.playlist];
 
         // Get mediaId from URL query parameter if it exists
@@ -189,13 +321,37 @@ const ContentStoriesV3: React.FC<Props> = ({
         setMediaIds(orderedPlaylist.map((item: any) => item.mediaid));
       } catch (err) {
         console.error("Error fetching playlist:", err);
-        // Retry fetching if it fails
-        setTimeout(() => fetchPlaylist(), 3000);
       }
     };
 
     fetchPlaylist();
   }, [initialPlaylistId, initialMediaId]);
+
+  // OPTIMIZATION 7: Memory Management - Clean up resources when activeIndex changes
+  useEffect(() => {
+    if (activeIndex !== null) {
+      // Apply resource limiting strategy
+      limitActivePlayers(activeIndex);
+
+      // Clean up UI state for videos far from view
+      mediaIds.forEach((id, idx) => {
+        if (Math.abs(idx - activeIndex) > 2) {
+          // Remove UI state for videos that are far from view (outside prev/curr/next)
+          setShowTitles(prev => {
+            const newState = { ...prev };
+            delete newState[id];
+            return newState;
+          });
+
+          setShowCtaElements(prev => {
+            const newState = { ...prev };
+            delete newState[id];
+            return newState;
+          });
+        }
+      });
+    }
+  }, [activeIndex, mediaIds]);
 
   // Initialize and setup intersection observer
   useEffect(() => {
@@ -214,6 +370,25 @@ const ContentStoriesV3: React.FC<Props> = ({
             // Set as active video
             setActiveIndex(index);
 
+            // OPTIMIZATION 6: Progressive Enhancement - Prioritize loading current video
+            if (isNewActiveVideo) {
+              // Immediately pause and possibly unload other videos to prioritize current one
+              mediaIds.forEach(id => {
+                if (id !== mediaId && initializedPlayers.has(id)) {
+                  const player = window.jwplayer(`jwplayer-${id}`);
+                  if (player) {
+                    player.pause();
+
+                    // If the video is far away, consider unloading it completely
+                    const videoIndex = mediaIds.indexOf(id);
+                    if (Math.abs(videoIndex - index) > 1) {
+                      player.unload();
+                    }
+                  }
+                }
+              });
+            }
+
             // Initialize this player if not already initialized
             if (!initializedPlayers.has(mediaId)) {
               initializePlayer(mediaId, index);
@@ -222,33 +397,24 @@ const ContentStoriesV3: React.FC<Props> = ({
               if (player) {
                 // If this is a new video coming into view (not the same one that was already active)
                 if (isNewActiveVideo) {
-                  // Check if the player is in an error state
-                  if (loadingErrors[mediaId]) {
-                    // Try to reinitialize if in error state
-                    retryInitializePlayer(mediaId, index);
-                  } else {
-                    // Always seek to 0 and play when a new video comes into view
-                    player.seek(0);
-                    player.play();
+                  // Always seek to 0 and play when a new video comes into view
+                  player.seek(0);
+                  player.play();
 
-                    // Reset title and CTA states for this video
-                    setShowTitles(prev => ({ ...prev, [mediaId]: true }));
-                    setShowCtaElements(prev => ({ ...prev, [mediaId]: false }));
+                  // Reset title and CTA states for this video
+                  setShowTitles(prev => ({ ...prev, [mediaId]: true }));
+                  setShowCtaElements(prev => ({ ...prev, [mediaId]: false }));
 
-                    // Clear this video's paused state if it was previously paused
-                    setPausedPlayers(prev => {
-                      const newSet = new Set([...prev]);
-                      newSet.delete(mediaId);
-                      return newSet;
-                    });
-
-                    // Set a timeout to detect if playback fails to start
-                    startLoadingTimeoutCheck(mediaId, index);
-                  }
+                  // Clear this video's paused state if it was previously paused
+                  setPausedPlayers(prev => {
+                    const newSet = new Set([...prev]);
+                    newSet.delete(mediaId);
+                    return newSet;
+                  });
                 } else {
                   // This is the same video that was already active
                   // If it's paused, keep it paused at its current position
-                  if (!pausedPlayers.has(mediaId) && !loadingErrors[mediaId]) {
+                  if (!pausedPlayers.has(mediaId)) {
                     player.play();
                   }
                 }
@@ -258,15 +424,8 @@ const ContentStoriesV3: React.FC<Props> = ({
               }
             }
 
-            // Pause all other videos
-            mediaIds.forEach(id => {
-              if (id !== mediaId && initializedPlayers.has(id)) {
-                const player = window.jwplayer(`jwplayer-${id}`);
-                if (player) {
-                  player.pause();
-                }
-              }
-            });
+            // OPTIMIZATION 1: Apply resource limiting after changing active video
+            limitActivePlayers(index);
           }
         });
       },
@@ -286,98 +445,21 @@ const ContentStoriesV3: React.FC<Props> = ({
         observerRef.current.disconnect();
       }
     };
-  }, [jwPlayerLoaded, mediaIds, initializedPlayers, pausedPlayers, activeIndex, loadingErrors]);
-
-  // Function to start a timeout to check if video loads
-  const startLoadingTimeoutCheck = (mediaId: string, index: number) => {
-    // Clear any existing timeout for this media ID
-    if (loadingTimeoutTimersRef.current[mediaId]) {
-      window.clearTimeout(loadingTimeoutTimersRef.current[mediaId]);
-    }
-
-    // Set a new timeout for loading check (6 seconds)
-    loadingTimeoutTimersRef.current[mediaId] = window.setTimeout(() => {
-      // Check if the player is in a playable state
-      const player = playerInstancesRef.current[mediaId];
-
-      if (player) {
-        const state = player.getState();
-        const position = player.getPosition();
-
-        // If player is still in buffering state or position hasn't moved after 6 seconds,
-        // consider it failed to load properly
-        if ((state === 'buffering' || position === 0) && !pausedPlayers.has(mediaId)) {
-          console.warn(`Video ${mediaId} seems to be stuck loading. Current state: ${state}, position: ${position}`);
-          setLoadingTimeouts(prev => ({ ...prev, [mediaId]: true }));
-
-          // Attempt to reinitialize
-          retryInitializePlayer(mediaId, index);
-        } else {
-          // Video is playing fine, clear timeout flag
-          setLoadingTimeouts(prev => ({ ...prev, [mediaId]: false }));
-        }
-      }
-    }, 6000);
-  };
-
-  // Function to retry initializing a player
-  const retryInitializePlayer = (mediaId: string, index: number) => {
-    const currentAttempts = retryAttempts[mediaId] || 0;
-
-    if (currentAttempts < MAX_RETRY_ATTEMPTS) {
-      console.log(`Retrying initialization for player ${mediaId}. Attempt ${currentAttempts + 1} of ${MAX_RETRY_ATTEMPTS}`);
-
-      // Update retry attempts counter
-      setRetryAttempts(prev => ({ ...prev, [mediaId]: currentAttempts + 1 }));
-
-      // Clear any active timer for this media ID
-      if (retryTimersRef.current[mediaId]) {
-        window.clearTimeout(retryTimersRef.current[mediaId]);
-      }
-
-      // First, try to clean up the previous player instance
-      try {
-        if (initializedPlayers.has(mediaId)) {
-          const player = window.jwplayer(`jwplayer-${mediaId}`);
-          if (player) {
-            player.remove();
-          }
-
-          // Remove from initialized players set
-          setInitializedPlayers(prev => {
-            const newSet = new Set([...prev]);
-            newSet.delete(mediaId);
-            return newSet;
-          });
-
-          delete playerInstancesRef.current[mediaId];
-        }
-      } catch (e) {
-        console.error(`Error cleaning up player ${mediaId}:`, e);
-      }
-
-      // Schedule the retry after a delay to give time for cleanup
-      retryTimersRef.current[mediaId] = window.setTimeout(() => {
-        initializePlayer(mediaId, index);
-      }, RETRY_DELAY);
-    } else {
-      console.error(`Maximum retry attempts reached for player ${mediaId}. Video will not be loaded.`);
-      // Keep the error state so the retry button remains visible
-    }
-  };
+  }, [jwPlayerLoaded, mediaIds, initializedPlayers, pausedPlayers, activeIndex, isMuted]);
 
   // Initialize a player
   const initializePlayer = async (mediaId: string, index: number) => {
-    if (!jwPlayerLoaded || initializedPlayers.has(mediaId)) return;
+    if (!jwPlayerLoaded || initializedPlayers.has(mediaId) || pendingOperationsRef.current[mediaId]) return;
+
+    // Mark this mediaId as having a pending operation
+    pendingOperationsRef.current[mediaId] = true;
 
     try {
-      // Clear any existing error and timeout flags for this media
-      setLoadingErrors(prev => ({ ...prev, [mediaId]: false }));
-      setLoadingTimeouts(prev => ({ ...prev, [mediaId]: false }));
+      // OPTIMIZATION 2: Fetch media data with retry for better network resilience
+      const data = await fetchWithRetry(`https://cdn.jwplayer.com/v2/media/${mediaId}`);
 
-      // Fetch media data
-      const response = await fetch(`https://cdn.jwplayer.com/v2/media/${mediaId}`);
-      const data = await response.json();
+      if (!isMountedRef.current) return;
+
       const videoItem = data.playlist[0];
 
       // Store title
@@ -403,39 +485,70 @@ const ContentStoriesV3: React.FC<Props> = ({
           tracks: videoItem.tracks || []
         }],
         mute: isMuted,
-        autostart: false,
+        autostart: true,
         controls: false,
         width: '100%',
         height: '100%',
         preload: 'auto',
         androidhls: true,
-        // Add a black background to avoid seeing the thumbnail
-        backgroundcolor: '#000000'
+        backgroundcolor: '#000000',
+        stretching: 'fill', // Force fill - will crop as needed
+        aspectratio: false // Disable aspect ratio constraint
       });
 
-      // Set up event listeners
+      // OPTIMIZATION 4: Better Error Handling - Add error recovery
+      player.on('error', (e: any) => {
+        console.error(`Player error for ${mediaId}:`, e);
+
+        if (!isMountedRef.current) return;
+
+        // Try to recover by re-initializing after a short delay
+        setTimeout(() => {
+          try {
+            if (index === activeIndex) {
+              // If this is the active player, try to recover
+              player.setup({
+                playlist: [{
+                  mediaid: mediaId,
+                  title: videoItem.title,
+                  sources: videoItem.sources,
+                  tracks: videoItem.tracks || []
+                }],
+                mute: isMuted,
+                autostart: true,
+                controls: false,
+                width: '100%',
+                height: '100%',
+                preload: 'auto',
+                androidhls: true,
+                backgroundcolor: '#000000',
+                stretching: 'fill',
+                aspectratio: false
+              });
+
+              // Force load and play
+              player.load();
+              if (!pausedPlayers.has(mediaId)) {
+                player.play();
+              }
+            }
+          } catch (recoverError) {
+            console.error(`Recovery failed for ${mediaId}:`, recoverError);
+          }
+        }, 1000);
+      });
+
+      // Set up optimized event listeners
       player.on('time', (e: any) => {
-        // Clear any loading timeout since we're getting time updates
-        if (loadingTimeoutTimersRef.current[mediaId]) {
-          window.clearTimeout(loadingTimeoutTimersRef.current[mediaId]);
-          setLoadingTimeouts(prev => ({ ...prev, [mediaId]: false }));
-        }
+        if (!isMountedRef.current) return;
 
-        const percentage = (e.position / e.duration) * 100;
-        setSeekPercentages(prev => ({ ...prev, [mediaId]: percentage }));
-        setCurrentTimes(prev => ({ ...prev, [mediaId]: e.position }));
-        setDurations(prev => ({ ...prev, [mediaId]: e.duration }));
-
-        // Update title and CTA visibility based on current position
-        const shouldShowTitle = titleDisplayTime > 0 && e.position <= titleDisplayTime;
-        const shouldShowCta = ctaDisplayTime > 0 && e.position >= ctaDisplayTime;
-
-        // Update per-video state
-        setShowTitles(prev => ({ ...prev, [mediaId]: shouldShowTitle }));
-        setShowCtaElements(prev => ({ ...prev, [mediaId]: shouldShowCta }));
+        // OPTIMIZATION 3: Use the batched update function
+        updateVideoUIState(mediaId, e.position, e.duration, index === activeIndex);
       });
 
       player.on('complete', () => {
+        if (!isMountedRef.current) return;
+
         // Auto-play next video
         if (index < mediaIds.length - 1) {
           const nextVideoEl = videoRefs.current[mediaIds[index + 1]];
@@ -445,6 +558,8 @@ const ContentStoriesV3: React.FC<Props> = ({
 
       // Add a buffer event listener to know when the video is actually ready to play
       player.on('buffer', (e: any) => {
+        if (!isMountedRef.current) return;
+
         // If buffer is full enough (>= 5%), we can consider it ready to play
         // Using a lower threshold for faster startup
         if (e.bufferPercent >= 5 && index === activeIndex && !pausedPlayers.has(mediaId)) {
@@ -452,18 +567,9 @@ const ContentStoriesV3: React.FC<Props> = ({
         }
       });
 
-      // Track errors during playback
-      player.on('error', (e: any) => {
-        console.error(`Error with player ${mediaId}:`, e);
-        setLoadingErrors(prev => ({ ...prev, [mediaId]: true }));
-
-        // Automatically try to recover if this is the active video
-        if (index === activeIndex) {
-          retryInitializePlayer(mediaId, index);
-        }
-      });
-
       player.on('ready', () => {
+        if (!isMountedRef.current) return;
+
         // Mark as initialized
         setInitializedPlayers(prev => new Set([...prev, mediaId]));
 
@@ -473,32 +579,20 @@ const ContentStoriesV3: React.FC<Props> = ({
           // Start loading the video data
           player.load();
           player.setMute(isMuted);
-
-          // Set a timeout to detect if video fails to start playing
-          startLoadingTimeoutCheck(mediaId, index);
         }
       });
 
     } catch (error) {
       console.error(`Error initializing player for ${mediaId}:`, error);
-      setLoadingErrors(prev => ({ ...prev, [mediaId]: true }));
-
-      // Try to reinitialize after a delay
-      retryTimersRef.current[mediaId] = window.setTimeout(() => {
-        retryInitializePlayer(mediaId, index);
-      }, RETRY_DELAY);
+    } finally {
+      // Clear the pending operation flag
+      delete pendingOperationsRef.current[mediaId];
     }
-  };
-
-  // Manual retry button handler
-  const handleRetry = (e: React.MouseEvent, mediaId: string, index: number) => {
-    e.stopPropagation(); // Prevent click event from bubbling to video click handler
-    retryInitializePlayer(mediaId, index);
   };
 
   // Handle video click
   const handleVideoClick = (mediaId: string) => {
-    if (!initializedPlayers.has(mediaId) || loadingErrors[mediaId]) return;
+    if (!initializedPlayers.has(mediaId)) return;
 
     const player = window.jwplayer(`jwplayer-${mediaId}`);
     if (player) {
@@ -512,10 +606,6 @@ const ContentStoriesV3: React.FC<Props> = ({
           newSet.delete(mediaId);
           return newSet;
         });
-
-        // Start a loading check when manually resuming
-        const index = mediaIds.indexOf(mediaId);
-        startLoadingTimeoutCheck(mediaId, index);
       }
     }
   };
@@ -538,7 +628,7 @@ const ContentStoriesV3: React.FC<Props> = ({
 
   // Handle seek bar click
   const handleSeek = (e: React.MouseEvent, mediaId: string) => {
-    if (!initializedPlayers.has(mediaId) || loadingErrors[mediaId]) return;
+    if (!initializedPlayers.has(mediaId)) return;
 
     const player = window.jwplayer(`jwplayer-${mediaId}`);
     if (player) {
@@ -552,6 +642,7 @@ const ContentStoriesV3: React.FC<Props> = ({
     <>
       <Helmet>
         <link rel="stylesheet" href="https://static1.dn.no/dn/static/assets/css/nhstfonts.css" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
       </Helmet>
 
       <div className={styles.container}>
@@ -594,29 +685,12 @@ const ContentStoriesV3: React.FC<Props> = ({
                 {(!initializedPlayers.has(mediaId) ||
                   (index === activeIndex &&
                     initializedPlayers.has(mediaId) &&
-                    playerInstancesRef.current[mediaId]?.getState() === 'buffering')) &&
-                  !loadingErrors[mediaId] && (
+                    playerInstancesRef.current[mediaId]?.getState() === 'buffering')) && (
                     <div className={styles.loadingIndicator}></div>
                   )}
 
-                {/* Error indicator with retry button */}
-                {loadingErrors[mediaId] && (
-                  <div className={styles.errorIndicator}>
-                    <div className={styles.errorMessage}>
-                      <p>Video could not be loaded</p>
-                      <button
-                        className={styles.retryButton}
-                        onClick={(e) => handleRetry(e, mediaId, index)}
-                      >
-                        <RefreshCw size={16} />
-                        Retry
-                      </button>
-                    </div>
-                  </div>
-                )}
-
                 {/* Pause indicator */}
-                {pausedPlayers.has(mediaId) && initializedPlayers.has(mediaId) && !loadingErrors[mediaId] && (
+                {pausedPlayers.has(mediaId) && initializedPlayers.has(mediaId) && (
                   <div className={styles.pauseIndicator}>
                     <Pause size={48} color="white" />
                   </div>
@@ -689,8 +763,6 @@ const ContentStoriesV3: React.FC<Props> = ({
   );
 };
 
-
-
 registerVevComponent(ContentStoriesV3, {
   name: "ContentStoriesV3",
   props: [
@@ -711,10 +783,7 @@ registerVevComponent(ContentStoriesV3, {
     { selector: styles.ctaBox, properties: ["background"] },
     { selector: styles.ctaImageContainer, properties: ["background"] },
     { selector: styles.ctaContent, properties: ["color", "font-size"] },
-    { selector: styles.videoWrapper, properties: ["box-shadow", "border-radius"] },
-    { selector: styles.errorIndicator, properties: ["background"] },
-    { selector: styles.errorMessage, properties: ["color"] },
-    { selector: styles.retryButton, properties: ["background", "color", "border"] }
+    { selector: styles.videoWrapper, properties: ["box-shadow", "border-radius"] }
   ],
   type: "both",
 });
