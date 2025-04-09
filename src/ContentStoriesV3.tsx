@@ -1,12 +1,27 @@
 import React, { useState, useEffect, useRef } from "react";
 import { registerVevComponent, useEditorState } from "@vev/react";
-import { Volume2, VolumeOff, Pause } from 'lucide-react';
+
+import { Volume2, VolumeOff, Pause, ChevronUp, ChevronDown } from 'lucide-react';
 import { Helmet } from 'react-helmet';
 import styles from './ContentStoriesV3.module.css';
 
 declare global {
   interface Window {
     jwplayer: any;
+  }
+
+  // Add Network Information API types
+  interface Navigator {
+    connection?: {
+      effectiveType?: 'slow-2g' | '2g' | '3g' | '4g';
+      type?: 'bluetooth' | 'cellular' | 'ethernet' | 'none' | 'wifi' | 'wimax' | 'other' | 'unknown';
+      downlink?: number;
+      downlinkMax?: number;
+      rtt?: number;
+      saveData?: boolean;
+      addEventListener: (type: string, listener: EventListener) => void;
+      removeEventListener: (type: string, listener: EventListener) => void;
+    };
   }
 }
 
@@ -50,6 +65,7 @@ const ContentStoriesV3: React.FC<Props> = ({
   const [seekPercentages, setSeekPercentages] = useState<{ [key: string]: number }>({});
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [isMobile, setIsMobile] = useState(false);
+  const [isInDNApp, setIsInDNApp] = useState<boolean>(false);
   const [showTitles, setShowTitles] = useState<{ [key: string]: boolean }>({});
   const [showCtaElements, setShowCtaElements] = useState<{ [key: string]: boolean }>({});
   const [jwPlayerLoaded, setJwPlayerLoaded] = useState(false);
@@ -78,6 +94,15 @@ const ContentStoriesV3: React.FC<Props> = ({
   const isMountedRef = useRef<boolean>(true);
   // Track pending fetch/init operations
   const pendingOperationsRef = useRef<{ [key: string]: boolean }>({});
+  // Track network quality
+  const networkQualityRef = useRef<{
+    isHighQuality: boolean;
+    connectionType?: string;
+    effectiveType?: string;
+    downlink?: number;
+  }>({
+    isHighQuality: false
+  });
 
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRefs = useRef<{ [key: string]: HTMLDivElement | null }>({});
@@ -153,6 +178,37 @@ const ContentStoriesV3: React.FC<Props> = ({
     });
   };
 
+  // Set highest quality for a player
+  const setHighestQuality = (mediaId: string) => {
+    const player = playerInstancesRef.current[mediaId];
+    if (!player) return;
+
+    try {
+      // Get available qualities
+      const qualities = player.getQualityLevels();
+      if (qualities && qualities.length > 0) {
+        // Find the highest quality index
+        let highestQualityIndex = 0;
+        let highestBitrate = 0;
+
+        qualities.forEach((quality: any, index: number) => {
+          if (quality.bitrate > highestBitrate) {
+            highestBitrate = quality.bitrate;
+            highestQualityIndex = index;
+          }
+        });
+
+        // Set to highest quality
+        if (highestQualityIndex > 0) {
+          player.setCurrentQuality(highestQualityIndex);
+          console.log(`Setting video ${mediaId} to highest quality (${qualities[highestQualityIndex].label})`);
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to set highest quality:', e);
+    }
+  };
+
   // OPTIMIZATION 3: Batch UI state updates
   const updateVideoUIState = (mediaId: string, position: number, duration: number, isActiveVideo: boolean) => {
     const percentage = (position / duration) * 100;
@@ -174,11 +230,85 @@ const ContentStoriesV3: React.FC<Props> = ({
     if (showTitles[mediaId] !== shouldShowTitle) {
       setShowTitles(prev => ({ ...prev, [mediaId]: shouldShowTitle }));
     }
-    1
+
     if (showCtaElements[mediaId] !== shouldShowCta) {
       setShowCtaElements(prev => ({ ...prev, [mediaId]: shouldShowCta }));
     }
+
+    // Check if we need to adjust quality (every 10 seconds)
+    if (Math.floor(position) % 10 === 0 && networkQualityRef.current.isHighQuality) {
+      setHighestQuality(mediaId);
+    }
   };
+
+  // Network condition detection
+  useEffect(() => {
+    const checkNetworkConditions = () => {
+      if (navigator.connection) {
+        const connection = navigator.connection;
+        console.log('Network conditions:', {
+          type: connection.type,
+          effectiveType: connection.effectiveType,
+          downlink: connection.downlink,
+          rtt: connection.rtt
+        });
+
+        // Determine if this is a high-quality connection
+        const isHighQuality =
+          connection.type === 'wifi' ||
+          connection.type === 'ethernet' ||
+          connection.effectiveType === '4g' ||
+          (connection.downlink && connection.downlink > 1.5); // 1.5 Mbps or better
+
+        networkQualityRef.current = {
+          isHighQuality,
+          connectionType: connection.type,
+          effectiveType: connection.effectiveType,
+          downlink: connection.downlink
+        };
+        // Set a default bandwidth estimate based on network conditions
+        if (connection.downlink) {
+          // Convert Mbps to bps (JW Player uses bps)
+          const bwEstimate = connection.downlink * 1000000;
+          console.log(`Setting default bandwidth estimate to ${bwEstimate} bps`);
+
+          // Apply to all players
+          mediaIds.forEach(id => {
+            if (initializedPlayers.has(id)) {
+              const player = window.jwplayer(`jwplayer-${id}`);
+              if (player) {
+                try {
+                  player.setDefaultBandwidthEstimate(bwEstimate);
+
+                  // If high quality connection, set high quality
+                  if (isHighQuality) {
+                    setHighestQuality(id);
+                  }
+                } catch (e) {
+                  console.warn('Failed to set bandwidth estimate', e);
+                }
+              }
+            }
+          });
+        }
+      } else {
+        // If Connection API not available, assume high quality on desktop
+        networkQualityRef.current.isHighQuality = !isMobile;
+      }
+    };
+
+    checkNetworkConditions();
+
+    // Listen for network changes
+    if (navigator.connection) {
+      navigator.connection.addEventListener('change', checkNetworkConditions);
+
+      return () => {
+        navigator.connection.removeEventListener('change', checkNetworkConditions);
+      };
+    }
+
+  }, [mediaIds, initializedPlayers, isMobile]);
 
   // Debug log for props and URL parameters
   useEffect(() => {
@@ -246,6 +376,8 @@ const ContentStoriesV3: React.FC<Props> = ({
 
   // Check device type and detect safe areas for notches/dynamic islands
   useEffect(() => {
+    const userAgentString = navigator.userAgent;
+    setIsInDNApp(userAgentString.includes("DNApp"));
     const handleResize = () => {
       if (!isMountedRef.current) return;
 
@@ -372,18 +504,30 @@ const ContentStoriesV3: React.FC<Props> = ({
 
             // OPTIMIZATION 6: Progressive Enhancement - Prioritize loading current video
             if (isNewActiveVideo) {
-              // Immediately pause and possibly unload other videos to prioritize current one
+              // Completely unload and remove all other videos
               mediaIds.forEach(id => {
-                if (id !== mediaId && initializedPlayers.has(id)) {
-                  const player = window.jwplayer(`jwplayer-${id}`);
-                  if (player) {
-                    player.pause();
+                if (id !== mediaId && playerInstancesRef.current[id]) {
+                  try {
+                    const player = window.jwplayer(`jwplayer-${id}`);
+                    if (player) {
+                      // First mute to immediately stop sound
+                      player.setMute(true);
 
-                    // If the video is far away, consider unloading it completely
-                    const videoIndex = mediaIds.indexOf(id);
-                    if (Math.abs(videoIndex - index) > 1) {
-                      player.unload();
+                      // Then completely remove the player
+                      player.remove();
+
+                      // Update your state
+                      setInitializedPlayers(prev => {
+                        const newSet = new Set([...prev]);
+                        newSet.delete(id);
+                        return newSet;
+                      });
+
+                      // Clean up the reference
+                      delete playerInstancesRef.current[id];
                     }
+                  } catch (e) {
+                    console.error(`Error removing player ${id}:`, e);
                   }
                 }
               });
@@ -399,6 +543,7 @@ const ContentStoriesV3: React.FC<Props> = ({
                 if (isNewActiveVideo) {
                   // Always seek to 0 and play when a new video comes into view
                   player.seek(0);
+                  player.setMute(isMuted);
                   player.play();
 
                   // Reset title and CTA states for this video
@@ -411,6 +556,11 @@ const ContentStoriesV3: React.FC<Props> = ({
                     newSet.delete(mediaId);
                     return newSet;
                   });
+
+                  // If network quality is good, try to set high quality
+                  if (networkQualityRef.current.isHighQuality) {
+                    setTimeout(() => setHighestQuality(mediaId), 1000);
+                  }
                 } else {
                   // This is the same video that was already active
                   // If it's paused, keep it paused at its current position
@@ -447,6 +597,49 @@ const ContentStoriesV3: React.FC<Props> = ({
     };
   }, [jwPlayerLoaded, mediaIds, initializedPlayers, pausedPlayers, activeIndex, isMuted]);
 
+
+
+
+
+  useEffect(() => {
+    // Only add keyboard navigation for desktop
+    if (isMobile || !containerRef.current) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Process only if we have videos and an active index
+      if (mediaIds.length === 0 || activeIndex === null) return;
+
+      // Handle arrow key navigation
+      if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+        // Prevent default behavior (e.g., scrolling the page)
+        event.preventDefault();
+
+        const newIndex = event.key === 'ArrowUp'
+          ? Math.max(activeIndex - 1, 0)
+          : Math.min(activeIndex + 1, mediaIds.length - 1);
+
+        // Only transition if we're actually changing videos
+        if (newIndex !== activeIndex) {
+          transitionToVideo(activeIndex, newIndex);
+        }
+      }
+    };
+
+    // Add event listener to window
+    window.addEventListener('keydown', handleKeyDown);
+
+    // Clean up
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [mediaIds, activeIndex, isMobile]);
+
+
+
+
+
+
+
   // Initialize a player
   const initializePlayer = async (mediaId: string, index: number) => {
     if (!jwPlayerLoaded || initializedPlayers.has(mediaId) || pendingOperationsRef.current[mediaId]) return;
@@ -475,12 +668,21 @@ const ContentStoriesV3: React.FC<Props> = ({
       const player = window.jwplayer(`jwplayer-${mediaId}`);
       // Store player instance in ref for later access
       playerInstancesRef.current[mediaId] = player;
+
+      // Calculate bandwidth estimate based on network conditions
+      let defaultBandwidthEstimate = 3000000; // Default 3 Mbps
+
+      if (navigator.connection) {
+        const connection = navigator.connection as any;
+        if (connection.downlink) {
+          defaultBandwidthEstimate = connection.downlink * 1000000;
+        }
+      }
+
       player.setup({
         playlist: [{
           mediaid: mediaId,
           title: videoItem.title,
-          // Don't use the image to avoid the thumbnail flash
-          // image: videoItem.image,
           sources: videoItem.sources,
           tracks: videoItem.tracks || []
         }],
@@ -492,8 +694,17 @@ const ContentStoriesV3: React.FC<Props> = ({
         preload: 'auto',
         androidhls: true,
         backgroundcolor: '#000000',
-        stretching: 'fill', // Force fill - will crop as needed
-        aspectratio: false // Disable aspect ratio constraint
+        stretching: 'fill',
+        aspectratio: false,
+        // High quality settings
+        qualityLabels: true,
+        defaultBandwidthEstimate: defaultBandwidthEstimate,
+        startQuality: networkQualityRef.current.isHighQuality ? 'high' : 'auto',
+        hlsjsdefault: true,
+        bandwidthMonitor: {
+          enabled: true,
+          polling: 5000 // Check bandwidth every 5 seconds
+        }
       });
 
       // OPTIMIZATION 4: Better Error Handling - Add error recovery
@@ -523,7 +734,11 @@ const ContentStoriesV3: React.FC<Props> = ({
                 androidhls: true,
                 backgroundcolor: '#000000',
                 stretching: 'fill',
-                aspectratio: false
+                aspectratio: false,
+                // High quality settings
+                qualityLabels: true,
+                defaultBandwidthEstimate: defaultBandwidthEstimate,
+                startQuality: networkQualityRef.current.isHighQuality ? 'high' : 'auto'
               });
 
               // Force load and play
@@ -536,6 +751,18 @@ const ContentStoriesV3: React.FC<Props> = ({
             console.error(`Recovery failed for ${mediaId}:`, recoverError);
           }
         }, 1000);
+      });
+
+      // Handle first frame to set high quality if network allows
+      player.on('firstFrame', () => {
+        if (!isMountedRef.current) return;
+
+        // Wait a bit for bandwidth detection, then set highest quality if appropriate
+        if (networkQualityRef.current.isHighQuality) {
+          setTimeout(() => {
+            setHighestQuality(mediaId);
+          }, 2000);
+        }
       });
 
       // Set up optimized event listeners
@@ -573,13 +800,43 @@ const ContentStoriesV3: React.FC<Props> = ({
         // Mark as initialized
         setInitializedPlayers(prev => new Set([...prev, mediaId]));
 
+        player.setMute(isMuted);
+
+
         // If this is the active video, start buffering it
         // We'll play it once buffer event fires with enough data
         if (index === activeIndex && !pausedPlayers.has(mediaId)) {
           // Start loading the video data
           player.load();
-          player.setMute(isMuted);
+
+
+          if (isMobile) {
+            if (isMuted) {
+              player.play();
+            } else {
+              // For unmuted on mobile, we need to wait for user interaction
+              // or the video may not play due to autoplay restrictions
+              player.once('userActive', () => {
+                player.play();
+              });
+            }
+          } else {
+            // Desktop can play without restrictions
+            player.play();
+          }
+
+
+
+
         }
+      });
+
+      // Handle quality level changes for debugging
+      player.on('levels', () => {
+        const levels = player.getQualityLevels();
+        console.log(`Available quality levels for ${mediaId}:`,
+          levels.map((l: any) => ({ label: l.label, bitrate: l.bitrate }))
+        );
       });
 
     } catch (error) {
@@ -626,6 +883,19 @@ const ContentStoriesV3: React.FC<Props> = ({
     });
   };
 
+  // Handle arrow buttons
+  const transitionToVideo = (fromIndex: number, toIndex: number) => {
+    if (fromIndex === toIndex || toIndex < 0 || toIndex >= mediaIds.length) return;
+
+    // Get the element reference for the target video
+    const targetElement = videoRefs.current[mediaIds[toIndex]];
+
+    // Scroll to the target video container smoothly
+    if (targetElement) {
+      targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  };
+
   // Handle seek bar click
   const handleSeek = (e: React.MouseEvent, mediaId: string) => {
     if (!initializedPlayers.has(mediaId)) return;
@@ -645,7 +915,16 @@ const ContentStoriesV3: React.FC<Props> = ({
         <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
       </Helmet>
 
-      <div className={styles.container}>
+      <div
+        className={styles.container}
+        style={{
+          // Add these CSS variables based on isInDNApp state
+          '--overlay-bottom-offset': isInDNApp ? '110px' : '25px',
+          '--controls-bottom-offset': isInDNApp ? '160px' : '30px',
+          '--seekbar-bottom-offset': isInDNApp ? '100px' : '15px',
+          '--seekbar-width-offset': isInDNApp ? '110px' : '40px',
+        } as React.CSSProperties}
+      >
         {/* Top Bar */}
         <div className={styles.topBar}>
           <span className={styles.topText}>{topText}</span>
@@ -691,7 +970,10 @@ const ContentStoriesV3: React.FC<Props> = ({
 
                 {/* Pause indicator */}
                 {pausedPlayers.has(mediaId) && initializedPlayers.has(mediaId) && (
-                  <div className={styles.pauseIndicator}>
+                  <div
+                    className={styles.pauseIndicator}
+                    onClick={() => handleVideoClick(mediaId)} // Add this line
+                  >
                     <Pause size={48} color="white" />
                   </div>
                 )}
@@ -755,8 +1037,23 @@ const ContentStoriesV3: React.FC<Props> = ({
         {/* Controls */}
         <div className={styles.controls}>
           <div className={styles.controlButton} onClick={handleMute}>
-            {isMuted ? <VolumeOff size={24} /> : <Volume2 size={24} />}
+            {isMuted ? <VolumeOff size={16} /> : <Volume2 size={16} />}
           </div>
+
+          {!isMobile && (
+            <>
+              <div className={styles.controlButton}
+                onClick={() => transitionToVideo(activeIndex || 0, Math.max((activeIndex || 0) - 1, 0))}>
+                <ChevronUp size={16} color="#fff" />
+              </div>
+              <div className={styles.controlButton}
+                onClick={() => transitionToVideo(activeIndex || 0, Math.min((activeIndex || 0) + 1, mediaIds.length - 1))}>
+                <ChevronDown size={16} color="#fff" />
+              </div>
+            </>
+          )}
+
+
         </div>
       </div>
     </>
@@ -783,7 +1080,10 @@ registerVevComponent(ContentStoriesV3, {
     { selector: styles.ctaBox, properties: ["background"] },
     { selector: styles.ctaImageContainer, properties: ["background"] },
     { selector: styles.ctaContent, properties: ["color", "font-size"] },
-    { selector: styles.videoWrapper, properties: ["box-shadow", "border-radius"] }
+    { selector: styles.title, properties: ["font-size"] },
+    { selector: styles.length, properties: ["font-size"] },
+    { selector: styles.videoWrapper, properties: ["box-shadow", "border-radius"] },
+
   ],
   type: "both",
 });
