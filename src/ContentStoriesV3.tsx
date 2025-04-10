@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { registerVevComponent, useEditorState } from "@vev/react";
-
+import { VideoIcon } from './icons';
 import { Volume2, VolumeOff, Pause, ChevronUp, ChevronDown } from 'lucide-react';
 import { Helmet } from 'react-helmet';
 import styles from './ContentStoriesV3.module.css';
@@ -292,6 +292,12 @@ const ContentStoriesV3: React.FC<Props> = ({
         // Always reset to beginning 
         player.seek(0);
 
+        setPausedPlayers(prev => {
+          const newSet = new Set([...prev]);
+          newSet.delete(mediaId);
+          return newSet;
+        });
+
         // Apply mute state based on global state and unmutedRef
         const shouldBeMuted = unmutedRef.current ? false : isMuted;
 
@@ -328,6 +334,7 @@ const ContentStoriesV3: React.FC<Props> = ({
         setShowCtaElements(prev => ({ ...prev, [mediaId]: false }));
       }
     }
+    preloadNextVideo(index);
   };
 
 
@@ -368,6 +375,28 @@ const ContentStoriesV3: React.FC<Props> = ({
     return () => clearTimeout(retryTimeout);
   }, [jwPlayerLoaded, mediaIds, playersReady, activeIndex]);
 
+  const resetInactiveVideo = (mediaId: string) => {
+    if (playersReady.has(mediaId)) {
+      const player = playerInstancesRef.current[mediaId];
+      if (player) {
+        // Only reset if the player isn't already at the beginning
+        const currentPosition = player.getPosition();
+        if (currentPosition > 0.5) { // Half-second threshold to avoid unnecessary resets
+          console.log(`Resetting position for inactive video ${mediaId}`);
+          player.seek(0);
+
+          // Also update the UI state to reflect the reset
+          updateVideoUIState(mediaId, 0, player.getDuration());
+          //REmove pause indicator
+          setPausedPlayers(prev => {
+            const newSet = new Set([...prev]);
+            newSet.delete(mediaId);
+            return newSet;
+          });
+        }
+      }
+    }
+  };
 
   // Set up intersection observer to detect current video
   useEffect(() => {
@@ -425,6 +454,7 @@ const ContentStoriesV3: React.FC<Props> = ({
                     });
                   }
 
+
                   // Reset UI states
                   setShowTitles(prev => ({ ...prev, [mediaId]: true }));
                   setShowCtaElements(prev => ({ ...prev, [mediaId]: false }));
@@ -451,9 +481,13 @@ const ContentStoriesV3: React.FC<Props> = ({
               });
             }
           }
+          else if (!entry.isIntersecting && entry.intersectionRatio < 0.2) {
+            // Reset the video when it's no longer visible
+            resetInactiveVideo(mediaId);
+          }
         });
       },
-      { threshold: [0.8] }
+      { threshold: [0.2, 0.8] }
     );
 
     // Observe all video containers
@@ -470,6 +504,22 @@ const ContentStoriesV3: React.FC<Props> = ({
       }
     };
   }, [jwPlayerLoaded, mediaIds, initializedPlayers, playersReady, activeIndex, isMuted, isMobile]);
+
+
+  const preloadNextVideo = (currentIndex: number) => {
+    // Skip if there's no next video
+    if (currentIndex >= mediaIds.length - 1) return;
+
+    const nextIndex = currentIndex + 1;
+    const nextMediaId = mediaIds[nextIndex];
+
+    // Skip if it's already initialized or being initialized
+    if (initializedPlayers.has(nextMediaId) || pendingOperationsRef.current[nextMediaId]) return;
+
+    console.log(`Preloading next video: ${nextMediaId}`);
+    initializePlayer(nextMediaId, nextIndex, true);
+  };
+
 
   // Keyboard navigation for desktop
   useEffect(() => {
@@ -615,6 +665,9 @@ const ContentStoriesV3: React.FC<Props> = ({
           console.log("First video now playing, marking autoplay as successful");
           hasTriggeredInitialPlayRef.current = true;
           setActiveIndex(0);
+        }
+        if (index === activeIndex) {
+          preloadNextVideo(index);
         }
       });
 
@@ -855,7 +908,7 @@ const ContentStoriesV3: React.FC<Props> = ({
                     className={styles.pauseIndicator}
                     onClick={() => handleVideoClick(mediaId)}
                   >
-                    <Pause size={48} color="white" />
+                    <VideoIcon size={96} />
                   </div>
                 )}
 
