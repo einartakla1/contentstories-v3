@@ -249,7 +249,7 @@ const ContentStoriesV3: React.FC<Props> = ({
 
     // Update title/CTA visibility
     const shouldShowTitle = titleDisplayTime > 0 && position <= titleDisplayTime;
-    const shouldShowCta = ctaDisplayTime > 0 && position >= duration - ctaDisplayTime;
+    const shouldShowCta = ctaDisplayTime > 0 && position >= ctaDisplayTime;
 
     if (showTitles[mediaId] !== shouldShowTitle) {
       setShowTitles(prev => ({ ...prev, [mediaId]: shouldShowTitle }));
@@ -271,6 +271,103 @@ const ContentStoriesV3: React.FC<Props> = ({
       }
     });
   }, [jwPlayerLoaded, mediaIds]);
+
+
+  // Add this ref with your other refs
+  const hasTriggeredInitialPlayRef = useRef(false);
+  const autoplayAttemptsRef = useRef(0);
+
+
+  // Create a function that extracts the playback logic from your intersection observer
+  // Place this with your other functions
+  const playVideo = (mediaId: string, index: number) => {
+    // Set active index
+    setActiveIndex(index);
+
+    console.log(`Playing video ${mediaId} (muted: ${isMuted}, unmutedRef: ${unmutedRef.current})`);
+
+    if (playersReady.has(mediaId)) {
+      const player = playerInstancesRef.current[mediaId];
+      if (player) {
+        // Always reset to beginning 
+        player.seek(0);
+
+        // Apply mute state based on global state and unmutedRef
+        const shouldBeMuted = unmutedRef.current ? false : isMuted;
+
+        // Important: On mobile, always start muted then unmute after playback begins
+        if (isMobile) {
+          // Always start muted first
+          player.setMute(true);
+          player.play();
+
+          // Then unmute if needed after a brief delay
+          if (!shouldBeMuted) {
+            setTimeout(() => {
+              if (player) {
+                player.setMute(false);
+                console.log(`Unmuting player ${mediaId} after starting playback`);
+              }
+            }, 250);
+          }
+        } else {
+          // Desktop doesn't need the special handling
+          player.setMute(shouldBeMuted);
+          player.play();
+        }
+
+        // Clear from paused players
+        setPausedPlayers(prev => {
+          const newSet = new Set([...prev]);
+          newSet.delete(mediaId);
+          return newSet;
+        });
+
+        // Reset UI states
+        setShowTitles(prev => ({ ...prev, [mediaId]: true }));
+        setShowCtaElements(prev => ({ ...prev, [mediaId]: false }));
+      }
+    }
+  };
+
+
+  useEffect(() => {
+    // Skip if we don't have videos or JW Player isn't loaded
+    if (!jwPlayerLoaded || mediaIds.length === 0) return;
+
+    // Skip if we've already triggered play or too many attempts
+    if (hasTriggeredInitialPlayRef.current || autoplayAttemptsRef.current > 2) return;
+
+    // Skip if we already have an active video
+    if (activeIndex !== null) return;
+
+    const firstMediaId = mediaIds[0];
+
+    // Check if the player is ready
+    if (playersReady.has(firstMediaId)) {
+      console.log(`Retry attempt ${autoplayAttemptsRef.current + 1}: Ensuring first video autoplay`);
+      autoplayAttemptsRef.current += 1;
+
+      // Try to play if it's not already playing
+      const player = playerInstancesRef.current[firstMediaId];
+      if (player && player.getState() !== 'playing') {
+        player.setMute(true); // Always muted for first load
+        player.play();
+        setActiveIndex(0);
+      }
+    }
+
+    // Schedule another check in case current attempt didn't work
+    const retryTimeout = setTimeout(() => {
+      if (isMountedRef.current && !hasTriggeredInitialPlayRef.current) {
+        // Force a re-run of this effect
+        setIsMuted(prev => prev);
+      }
+    }, 1000);
+
+    return () => clearTimeout(retryTimeout);
+  }, [jwPlayerLoaded, mediaIds, playersReady, activeIndex]);
+
 
   // Set up intersection observer to detect current video
   useEffect(() => {
@@ -431,7 +528,7 @@ const ContentStoriesV3: React.FC<Props> = ({
           tracks: videoItem.tracks || []
         }],
         mute: startMuted,
-        autostart: false, // Do not autostart on setup
+        autostart: index === 0, // Do not autostart on setup
         controls: false,
         width: '100%',
         height: '100%',
@@ -472,8 +569,17 @@ const ContentStoriesV3: React.FC<Props> = ({
         setInitializedPlayers(prev => new Set([...prev, mediaId]));
         setPlayersReady(prev => new Set([...prev, mediaId]));
 
-        // If this is the active video and not preloading, play it
-        if (index === activeIndex && !preloadOnly) {
+        // For first video, let autostart handle it (already set in setup)
+        // Just mark it as triggered when ready
+        if (index === 0) {
+          hasTriggeredInitialPlayRef.current = true;
+          setActiveIndex(0);
+
+          // Always muted for first load
+          player.setMute(true);
+        }
+        // For other videos, keep the existing active video logic
+        else if (index === activeIndex && !preloadOnly) {
           if (isMobile) {
             // On mobile always start muted (will unmute after if needed)
             player.setMute(true);
@@ -499,6 +605,16 @@ const ContentStoriesV3: React.FC<Props> = ({
             player.setMute(shouldBeMuted);
             player.play();
           }
+        }
+      });
+
+
+      player.on('play', () => {
+        // If this is the first video and it's now playing, mark it as triggered
+        if (index === 0) {
+          console.log("First video now playing, marking autoplay as successful");
+          hasTriggeredInitialPlayRef.current = true;
+          setActiveIndex(0);
         }
       });
 
