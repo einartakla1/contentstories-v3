@@ -10,7 +10,6 @@ declare global {
     jwplayer: any;
   }
 
-  // Add Network Information API types
   interface Navigator {
     connection?: {
       effectiveType?: 'slow-2g' | '2g' | '3g' | '4g';
@@ -58,59 +57,43 @@ const ContentStoriesV3: React.FC<Props> = ({
   titleDisplayTime,
   ctaDisplayTime
 }) => {
+  // Core state
   const [mediaIds, setMediaIds] = useState<string[]>([]);
   const [isMuted, setIsMuted] = useState(true);
-  const [currentTimes, setCurrentTimes] = useState<{ [key: string]: number }>({});
-  const [durations, setDurations] = useState<{ [key: string]: number }>({});
-  const [seekPercentages, setSeekPercentages] = useState<{ [key: string]: number }>({});
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [isMobile, setIsMobile] = useState(false);
   const [isInDNApp, setIsInDNApp] = useState<boolean>(false);
+  const [jwPlayerLoaded, setJwPlayerLoaded] = useState(false);
+
+  // UI state
+  const [titles, setTitles] = useState<{ [key: string]: string }>({});
+  const [currentTimes, setCurrentTimes] = useState<{ [key: string]: number }>({});
+  const [durations, setDurations] = useState<{ [key: string]: number }>({});
+  const [seekPercentages, setSeekPercentages] = useState<{ [key: string]: number }>({});
   const [showTitles, setShowTitles] = useState<{ [key: string]: boolean }>({});
   const [showCtaElements, setShowCtaElements] = useState<{ [key: string]: boolean }>({});
-  const [jwPlayerLoaded, setJwPlayerLoaded] = useState(false);
-  const [initializedPlayers, setInitializedPlayers] = useState<Set<string>>(new Set());
-  const [pausedPlayers, setPausedPlayers] = useState<Set<string>>(new Set());
-  const [titles, setTitles] = useState<{ [key: string]: string }>({});
   const [safeAreaInsets, setSafeAreaInsets] = useState({
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0
+    top: 0, right: 0, bottom: 0, left: 0
   });
 
-  // OPTIMIZATION 5: Use refs for performance-critical values that don't need to trigger re-renders
-  const playerStatesRef = useRef<{
-    currentTimes: { [key: string]: number };
-    durations: { [key: string]: number };
-    seekPercentages: { [key: string]: number };
-  }>({
-    currentTimes: {},
-    durations: {},
-    seekPercentages: {}
-  });
+  // Player state tracking
+  const [pausedPlayers, setPausedPlayers] = useState<Set<string>>(new Set());
+  const [initializedPlayers, setInitializedPlayers] = useState<Set<string>>(new Set());
+  const [playersReady, setPlayersReady] = useState<Set<string>>(new Set());
 
-  // Track if component is mounted to prevent state updates after unmount
+  // Refs
   const isMountedRef = useRef<boolean>(true);
-  // Track pending fetch/init operations
   const pendingOperationsRef = useRef<{ [key: string]: boolean }>({});
-  // Track network quality
-  const networkQualityRef = useRef<{
-    isHighQuality: boolean;
-    connectionType?: string;
-    effectiveType?: string;
-    downlink?: number;
-  }>({
-    isHighQuality: false
-  });
-
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRefs = useRef<{ [key: string]: HTMLDivElement | null }>({});
-  const observerRef = useRef<IntersectionObserver | null>(null);
   const playerInstancesRef = useRef<{ [key: string]: any }>({});
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const userScrollingRef = useRef<boolean>(false);
+  const unmutedRef = useRef<boolean>(false); // Reference to track unmuted state
+
   const { disabled } = useEditorState();
 
-  // OPTIMIZATION 2: Network Resilience - Fetch with retry
+  // Simple fetch with retry function
   const fetchWithRetry = async (url: string, retries = 3, delay = 300): Promise<any> => {
     let lastError;
 
@@ -123,9 +106,7 @@ const ContentStoriesV3: React.FC<Props> = ({
         console.warn(`Fetch attempt ${i + 1} failed for ${url}`, error);
         lastError = error;
 
-        // Don't wait on the last attempt
         if (i < retries - 1) {
-          // Wait with exponential backoff
           await new Promise(r => setTimeout(r, delay * Math.pow(2, i)));
         }
       }
@@ -133,220 +114,6 @@ const ContentStoriesV3: React.FC<Props> = ({
 
     throw lastError;
   };
-
-  // OPTIMIZATION 1: Resource Management - Limit active players
-  const limitActivePlayers = (currentIndex: number) => {
-    if (currentIndex === null || mediaIds.length === 0) return;
-
-    // Only keep at most 3 players initialized at any time (current, previous, next)
-    const indicesToKeep = [
-      currentIndex - 1,
-      currentIndex,
-      currentIndex + 1
-    ].filter(idx => idx >= 0 && idx < mediaIds.length);
-
-    // Get media IDs to keep
-    const mediaIdsToKeep = indicesToKeep.map(idx => mediaIds[idx]);
-
-    // Remove players that aren't needed
-    Array.from(initializedPlayers).forEach(id => {
-      if (!mediaIdsToKeep.includes(id)) {
-        try {
-          const player = window.jwplayer(`jwplayer-${id}`);
-          if (player) {
-            player.remove();
-            delete playerInstancesRef.current[id];
-          }
-
-          // Remove from initialized set
-          setInitializedPlayers(prev => {
-            const newSet = new Set([...prev]);
-            newSet.delete(id);
-            return newSet;
-          });
-
-          // Clear any paused state
-          setPausedPlayers(prev => {
-            const newSet = new Set([...prev]);
-            newSet.delete(id);
-            return newSet;
-          });
-        } catch (e) {
-          console.error(`Error cleaning up player ${id}:`, e);
-        }
-      }
-    });
-  };
-
-  // Set highest quality for a player
-  const setHighestQuality = (mediaId: string) => {
-    const player = playerInstancesRef.current[mediaId];
-    if (!player) return;
-
-    try {
-      // Get available qualities
-      const qualities = player.getQualityLevels();
-      if (qualities && qualities.length > 0) {
-        // Find the highest quality index
-        let highestQualityIndex = 0;
-        let highestBitrate = 0;
-
-        qualities.forEach((quality: any, index: number) => {
-          if (quality.bitrate > highestBitrate) {
-            highestBitrate = quality.bitrate;
-            highestQualityIndex = index;
-          }
-        });
-
-        // Set to highest quality
-        if (highestQualityIndex > 0) {
-          player.setCurrentQuality(highestQualityIndex);
-          console.log(`Setting video ${mediaId} to highest quality (${qualities[highestQualityIndex].label})`);
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to set highest quality:', e);
-    }
-  };
-
-  // OPTIMIZATION 3: Batch UI state updates
-  const updateVideoUIState = (mediaId: string, position: number, duration: number, isActiveVideo: boolean) => {
-    const percentage = (position / duration) * 100;
-
-    // Always update the ref
-    playerStatesRef.current.currentTimes[mediaId] = position;
-    playerStatesRef.current.durations[mediaId] = duration;
-    playerStatesRef.current.seekPercentages[mediaId] = percentage;
-
-    // ALWAYS update time and seek states for all videos
-    setCurrentTimes(prev => ({ ...prev, [mediaId]: position }));
-    setDurations(prev => ({ ...prev, [mediaId]: duration }));
-    setSeekPercentages(prev => ({ ...prev, [mediaId]: percentage }));
-
-    // Only update title/CTA visibility states if values changed
-    const shouldShowTitle = titleDisplayTime > 0 && position <= titleDisplayTime;
-    const shouldShowCta = ctaDisplayTime > 0 && position >= ctaDisplayTime;
-
-    if (showTitles[mediaId] !== shouldShowTitle) {
-      setShowTitles(prev => ({ ...prev, [mediaId]: shouldShowTitle }));
-    }
-
-    if (showCtaElements[mediaId] !== shouldShowCta) {
-      setShowCtaElements(prev => ({ ...prev, [mediaId]: shouldShowCta }));
-    }
-
-    // Check if we need to adjust quality (every 10 seconds)
-    if (Math.floor(position) % 10 === 0 && networkQualityRef.current.isHighQuality) {
-      setHighestQuality(mediaId);
-    }
-  };
-
-  // Network condition detection
-  useEffect(() => {
-    const checkNetworkConditions = () => {
-      if (navigator.connection) {
-        const connection = navigator.connection;
-        console.log('Network conditions:', {
-          type: connection.type,
-          effectiveType: connection.effectiveType,
-          downlink: connection.downlink,
-          rtt: connection.rtt
-        });
-
-        // Determine if this is a high-quality connection
-        const isHighQuality =
-          connection.type === 'wifi' ||
-          connection.type === 'ethernet' ||
-          connection.effectiveType === '4g' ||
-          (connection.downlink && connection.downlink > 1.5); // 1.5 Mbps or better
-
-        networkQualityRef.current = {
-          isHighQuality,
-          connectionType: connection.type,
-          effectiveType: connection.effectiveType,
-          downlink: connection.downlink
-        };
-        // Set a default bandwidth estimate based on network conditions
-        if (connection.downlink) {
-          // Convert Mbps to bps (JW Player uses bps)
-          const bwEstimate = connection.downlink * 1000000;
-          console.log(`Setting default bandwidth estimate to ${bwEstimate} bps`);
-
-          // Apply to all players
-          mediaIds.forEach(id => {
-            if (initializedPlayers.has(id)) {
-              const player = window.jwplayer(`jwplayer-${id}`);
-              if (player) {
-                try {
-                  player.setDefaultBandwidthEstimate(bwEstimate);
-
-                  // If high quality connection, set high quality
-                  if (isHighQuality) {
-                    setHighestQuality(id);
-                  }
-                } catch (e) {
-                  console.warn('Failed to set bandwidth estimate', e);
-                }
-              }
-            }
-          });
-        }
-      } else {
-        // If Connection API not available, assume high quality on desktop
-        networkQualityRef.current.isHighQuality = !isMobile;
-      }
-    };
-
-    checkNetworkConditions();
-
-    // Listen for network changes
-    if (navigator.connection) {
-      navigator.connection.addEventListener('change', checkNetworkConditions);
-
-      return () => {
-        navigator.connection.removeEventListener('change', checkNetworkConditions);
-      };
-    }
-
-  }, [mediaIds, initializedPlayers, isMobile]);
-
-  // Debug log for props and URL parameters
-  useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const queryMediaId = urlParams.get('mediaid');
-
-    console.log("Component initialized with:", {
-      props: {
-        titleDisplayTime,
-        ctaDisplayTime,
-        inputCtaTekst,
-        initialMediaId,
-        initialPlaylistId
-      },
-      urlParams: {
-        mediaid: queryMediaId
-      }
-    });
-
-    // Set mounted ref
-    isMountedRef.current = true;
-
-    // Cleanup on unmount
-    return () => {
-      isMountedRef.current = false;
-
-      // Clear all player instances
-      Object.keys(playerInstancesRef.current).forEach(mediaId => {
-        try {
-          if (playerInstancesRef.current[mediaId]) {
-            window.jwplayer(`jwplayer-${mediaId}`).remove();
-          }
-        } catch (e) {
-          console.error(`Error removing player ${mediaId}:`, e);
-        }
-      });
-    };
-  }, [titleDisplayTime, ctaDisplayTime, inputCtaTekst, initialMediaId, initialPlaylistId]);
 
   // Load JW Player script
   useEffect(() => {
@@ -366,7 +133,6 @@ const ContentStoriesV3: React.FC<Props> = ({
     document.body.appendChild(script);
 
     return () => {
-      // Cleanup script if it hasn't loaded yet
       const existingScript = document.querySelector(`script[src="${script.src}"]`);
       if (existingScript && existingScript.parentNode) {
         existingScript.parentNode.removeChild(existingScript);
@@ -374,16 +140,16 @@ const ContentStoriesV3: React.FC<Props> = ({
     };
   }, []);
 
-  // Check device type and detect safe areas for notches/dynamic islands
+  // Device detection
   useEffect(() => {
     const userAgentString = navigator.userAgent;
     setIsInDNApp(userAgentString.includes("DNApp"));
+
     const handleResize = () => {
       if (!isMountedRef.current) return;
-
       setIsMobile(window.innerWidth <= 768);
 
-      // Get safe area insets if available in browser
+      // Get safe area insets
       const computedStyle = window.getComputedStyle(document.documentElement);
       const safeTop = parseInt(computedStyle.getPropertyValue('--sat') || '0', 10);
       const safeRight = parseInt(computedStyle.getPropertyValue('--sar') || '0', 10);
@@ -398,7 +164,7 @@ const ContentStoriesV3: React.FC<Props> = ({
       });
     };
 
-    // Set safe area CSS variables for iOS devices
+    // Set iOS safe area variables
     const setIOSSafeAreaVariables = () => {
       if ('CSS' in window && CSS.supports('top: env(safe-area-inset-top)')) {
         document.documentElement.style.setProperty('--sat', 'env(safe-area-inset-top)');
@@ -415,7 +181,27 @@ const ContentStoriesV3: React.FC<Props> = ({
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Fetch playlist data and setup media IDs
+  // Clean up on unmount
+  useEffect(() => {
+    isMountedRef.current = true;
+
+    return () => {
+      isMountedRef.current = false;
+
+      // Clean up all player instances
+      Object.keys(playerInstancesRef.current).forEach(mediaId => {
+        try {
+          if (playerInstancesRef.current[mediaId]) {
+            window.jwplayer(`jwplayer-${mediaId}`).remove();
+          }
+        } catch (e) {
+          console.error(`Error removing player ${mediaId}:`, e);
+        }
+      });
+    };
+  }, []);
+
+  // Fetch playlist data
   useEffect(() => {
     const fetchPlaylist = async () => {
       if (!initialPlaylistId) {
@@ -424,29 +210,22 @@ const ContentStoriesV3: React.FC<Props> = ({
       }
 
       try {
-        // Use fetchWithRetry for better network resilience
         const data = await fetchWithRetry(`https://cdn.jwplayer.com/v2/playlists/${initialPlaylistId}`);
-
         if (!isMountedRef.current) return;
 
         let orderedPlaylist = [...data.playlist];
 
-        // Get mediaId from URL query parameter if it exists
+        // Get mediaId from URL parameter if it exists
         const urlParams = new URLSearchParams(window.location.search);
         const queryMediaId = urlParams.get('mediaid');
-
-        // Determine which mediaId to prioritize (URL param takes precedence over prop)
         const priorityMediaId = queryMediaId || initialMediaId;
 
-        // Reorder playlist if a priority mediaId is specified
+        // Reorder playlist if needed
         if (priorityMediaId) {
-          console.log(`Prioritizing media ID from ${queryMediaId ? 'URL' : 'props'}: ${priorityMediaId}`);
           const initialIndex = orderedPlaylist.findIndex((item: any) => item.mediaid === priorityMediaId);
           if (initialIndex > -1) {
             const [initialItem] = orderedPlaylist.splice(initialIndex, 1);
             orderedPlaylist = [initialItem, ...orderedPlaylist];
-          } else {
-            console.warn(`Media ID ${priorityMediaId} not found in playlist`);
           }
         }
 
@@ -459,37 +238,44 @@ const ContentStoriesV3: React.FC<Props> = ({
     fetchPlaylist();
   }, [initialPlaylistId, initialMediaId]);
 
-  // OPTIMIZATION 7: Memory Management - Clean up resources when activeIndex changes
-  useEffect(() => {
-    if (activeIndex !== null) {
-      // Apply resource limiting strategy
-      limitActivePlayers(activeIndex);
+  // Update UI state for video
+  const updateVideoUIState = (mediaId: string, position: number, duration: number) => {
+    const percentage = (position / duration) * 100;
 
-      // Clean up UI state for videos far from view
-      mediaIds.forEach((id, idx) => {
-        if (Math.abs(idx - activeIndex) > 2) {
-          // Remove UI state for videos that are far from view (outside prev/curr/next)
-          setShowTitles(prev => {
-            const newState = { ...prev };
-            delete newState[id];
-            return newState;
-          });
+    // Update time and seek states
+    setCurrentTimes(prev => ({ ...prev, [mediaId]: position }));
+    setDurations(prev => ({ ...prev, [mediaId]: duration }));
+    setSeekPercentages(prev => ({ ...prev, [mediaId]: percentage }));
 
-          setShowCtaElements(prev => {
-            const newState = { ...prev };
-            delete newState[id];
-            return newState;
-          });
-        }
-      });
+    // Update title/CTA visibility
+    const shouldShowTitle = titleDisplayTime > 0 && position <= titleDisplayTime;
+    const shouldShowCta = ctaDisplayTime > 0 && position >= duration - ctaDisplayTime;
+
+    if (showTitles[mediaId] !== shouldShowTitle) {
+      setShowTitles(prev => ({ ...prev, [mediaId]: shouldShowTitle }));
     }
-  }, [activeIndex, mediaIds]);
 
-  // Initialize and setup intersection observer
+    if (showCtaElements[mediaId] !== shouldShowCta) {
+      setShowCtaElements(prev => ({ ...prev, [mediaId]: shouldShowCta }));
+    }
+  };
+
+  // Preload all players without starting them
   useEffect(() => {
     if (!jwPlayerLoaded || mediaIds.length === 0) return;
 
-    // Setup intersection observer
+    // For each media ID, initialize the player instance
+    mediaIds.forEach((mediaId, index) => {
+      if (!initializedPlayers.has(mediaId) && !pendingOperationsRef.current[mediaId]) {
+        initializePlayer(mediaId, index, true); // true means preload only
+      }
+    });
+  }, [jwPlayerLoaded, mediaIds]);
+
+  // Set up intersection observer to detect current video
+  useEffect(() => {
+    if (!jwPlayerLoaded || mediaIds.length === 0) return;
+
     observerRef.current = new IntersectionObserver(
       (entries) => {
         entries.forEach(entry => {
@@ -498,84 +284,75 @@ const ContentStoriesV3: React.FC<Props> = ({
 
           if (entry.isIntersecting && entry.intersectionRatio >= 0.8) {
             const isNewActiveVideo = activeIndex !== index;
-
-            // Set as active video
             setActiveIndex(index);
 
-            // OPTIMIZATION 6: Progressive Enhancement - Prioritize loading current video
             if (isNewActiveVideo) {
-              // Completely unload and remove all other videos
+              console.log(`Video ${mediaId} is now active (muted: ${isMuted}, unmutedRef: ${unmutedRef.current})`);
+
+              if (playersReady.has(mediaId)) {
+                const player = playerInstancesRef.current[mediaId];
+                if (player) {
+                  // Always reset to beginning when scrolling to a video
+                  player.seek(0);
+
+                  // Apply mute state based on global state and unmutedRef
+                  const shouldBeMuted = unmutedRef.current ? false : isMuted;
+
+                  // Important: On mobile, always start muted then unmute after playback begins
+                  if (isMobile) {
+                    // Always start muted first
+                    player.setMute(true);
+                    player.play();
+
+                    // Then unmute if needed after a brief delay
+                    if (!shouldBeMuted) {
+                      setTimeout(() => {
+                        if (player) {
+                          player.setMute(false);
+                          console.log(`Unmuting player ${mediaId} after starting playback`);
+                        }
+                      }, 250);
+                    }
+                  } else {
+                    // Desktop doesn't need the special handling
+                    player.setMute(shouldBeMuted);
+                    player.play();
+                  }
+
+                  // Clear from paused players if user didn't manually pause
+                  if (!pausedPlayers.has(mediaId) || userScrollingRef.current) {
+                    setPausedPlayers(prev => {
+                      const newSet = new Set([...prev]);
+                      newSet.delete(mediaId);
+                      return newSet;
+                    });
+                  }
+
+                  // Reset UI states
+                  setShowTitles(prev => ({ ...prev, [mediaId]: true }));
+                  setShowCtaElements(prev => ({ ...prev, [mediaId]: false }));
+                }
+              } else if (initializedPlayers.has(mediaId)) {
+                console.log(`Player ${mediaId} initialized but not ready yet, playing when ready`);
+              } else {
+                // Initialize this player if not already initialized
+                initializePlayer(mediaId, index, false);
+              }
+
+              // Pause other videos
               mediaIds.forEach(id => {
-                if (id !== mediaId && playerInstancesRef.current[id]) {
+                if (id !== mediaId && playersReady.has(id)) {
                   try {
-                    const player = window.jwplayer(`jwplayer-${id}`);
-                    if (player) {
-                      // First mute to immediately stop sound
-                      player.setMute(true);
-
-                      // Then completely remove the player
-                      player.remove();
-
-                      // Update your state
-                      setInitializedPlayers(prev => {
-                        const newSet = new Set([...prev]);
-                        newSet.delete(id);
-                        return newSet;
-                      });
-
-                      // Clean up the reference
-                      delete playerInstancesRef.current[id];
+                    const player = playerInstancesRef.current[id];
+                    if (player && player.getState() === 'playing') {
+                      player.pause();
                     }
                   } catch (e) {
-                    console.error(`Error removing player ${id}:`, e);
+                    console.error(`Error pausing player ${id}:`, e);
                   }
                 }
               });
             }
-
-            // Initialize this player if not already initialized
-            if (!initializedPlayers.has(mediaId)) {
-              initializePlayer(mediaId, index);
-            } else {
-              const player = window.jwplayer(`jwplayer-${mediaId}`);
-              if (player) {
-                // If this is a new video coming into view (not the same one that was already active)
-                if (isNewActiveVideo) {
-                  // Always seek to 0 and play when a new video comes into view
-                  player.seek(0);
-                  player.setMute(isMuted);
-                  player.play();
-
-                  // Reset title and CTA states for this video
-                  setShowTitles(prev => ({ ...prev, [mediaId]: true }));
-                  setShowCtaElements(prev => ({ ...prev, [mediaId]: false }));
-
-                  // Clear this video's paused state if it was previously paused
-                  setPausedPlayers(prev => {
-                    const newSet = new Set([...prev]);
-                    newSet.delete(mediaId);
-                    return newSet;
-                  });
-
-                  // If network quality is good, try to set high quality
-                  if (networkQualityRef.current.isHighQuality) {
-                    setTimeout(() => setHighestQuality(mediaId), 1000);
-                  }
-                } else {
-                  // This is the same video that was already active
-                  // If it's paused, keep it paused at its current position
-                  if (!pausedPlayers.has(mediaId)) {
-                    player.play();
-                  }
-                }
-
-                // Always apply the current global mute state
-                player.setMute(isMuted);
-              }
-            }
-
-            // OPTIMIZATION 1: Apply resource limiting after changing active video
-            limitActivePlayers(index);
           }
         });
       },
@@ -595,89 +372,56 @@ const ContentStoriesV3: React.FC<Props> = ({
         observerRef.current.disconnect();
       }
     };
-  }, [jwPlayerLoaded, mediaIds, initializedPlayers, pausedPlayers, activeIndex, isMuted]);
+  }, [jwPlayerLoaded, mediaIds, initializedPlayers, playersReady, activeIndex, isMuted, isMobile]);
 
-
-
-
-
+  // Keyboard navigation for desktop
   useEffect(() => {
-    // Only add keyboard navigation for desktop
     if (isMobile || !containerRef.current) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      // Process only if we have videos and an active index
       if (mediaIds.length === 0 || activeIndex === null) return;
 
-      // Handle arrow key navigation
       if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
-        // Prevent default behavior (e.g., scrolling the page)
         event.preventDefault();
 
         const newIndex = event.key === 'ArrowUp'
           ? Math.max(activeIndex - 1, 0)
           : Math.min(activeIndex + 1, mediaIds.length - 1);
 
-        // Only transition if we're actually changing videos
         if (newIndex !== activeIndex) {
           transitionToVideo(activeIndex, newIndex);
         }
       }
     };
 
-    // Add event listener to window
     window.addEventListener('keydown', handleKeyDown);
-
-    // Clean up
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-    };
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, [mediaIds, activeIndex, isMobile]);
 
-
-
-
-
-
-
   // Initialize a player
-  const initializePlayer = async (mediaId: string, index: number) => {
+  const initializePlayer = async (mediaId: string, index: number, preloadOnly: boolean = false) => {
     if (!jwPlayerLoaded || initializedPlayers.has(mediaId) || pendingOperationsRef.current[mediaId]) return;
 
-    // Mark this mediaId as having a pending operation
+    console.log(`Initializing player for ${mediaId} (muted: ${isMuted}, preloadOnly: ${preloadOnly})`);
     pendingOperationsRef.current[mediaId] = true;
 
     try {
-      // OPTIMIZATION 2: Fetch media data with retry for better network resilience
       const data = await fetchWithRetry(`https://cdn.jwplayer.com/v2/media/${mediaId}`);
-
       if (!isMountedRef.current) return;
 
       const videoItem = data.playlist[0];
 
-      // Store title
       setTitles(prev => ({ ...prev, [mediaId]: videoItem.title }));
-
-      // Initialize title visibility (always show at start)
       setShowTitles(prev => ({ ...prev, [mediaId]: true }));
-
-      // Initialize CTA visibility (hide at start)
       setShowCtaElements(prev => ({ ...prev, [mediaId]: false }));
 
       // Initialize JW Player
       const player = window.jwplayer(`jwplayer-${mediaId}`);
-      // Store player instance in ref for later access
       playerInstancesRef.current[mediaId] = player;
 
-      // Calculate bandwidth estimate based on network conditions
-      let defaultBandwidthEstimate = 3000000; // Default 3 Mbps
-
-      if (navigator.connection) {
-        const connection = navigator.connection as any;
-        if (connection.downlink) {
-          defaultBandwidthEstimate = connection.downlink * 1000000;
-        }
-      }
+      // Always start muted on mobile regardless of state
+      // We'll unmute later if needed
+      const startMuted = true; // Always start muted, we'll unmute after playing starts if needed
 
       player.setup({
         playlist: [{
@@ -686,8 +430,8 @@ const ContentStoriesV3: React.FC<Props> = ({
           sources: videoItem.sources,
           tracks: videoItem.tracks || []
         }],
-        mute: isMuted,
-        autostart: true,
+        mute: startMuted,
+        autostart: false, // Do not autostart on setup
         controls: false,
         width: '100%',
         height: '100%',
@@ -696,83 +440,20 @@ const ContentStoriesV3: React.FC<Props> = ({
         backgroundcolor: '#000000',
         stretching: 'fill',
         aspectratio: false,
-        // High quality settings
-        qualityLabels: true,
-        defaultBandwidthEstimate: defaultBandwidthEstimate,
-        startQuality: networkQualityRef.current.isHighQuality ? 'high' : 'auto',
-        hlsjsdefault: true,
-        bandwidthMonitor: {
-          enabled: true,
-          polling: 5000 // Check bandwidth every 5 seconds
+        // Mobile settings 
+        mobileSettings: {
+          autostart: false, // Don't autostart yet
+          mute: true
         }
       });
 
-      // OPTIMIZATION 4: Better Error Handling - Add error recovery
-      player.on('error', (e: any) => {
-        console.error(`Player error for ${mediaId}:`, e);
-
-        if (!isMountedRef.current) return;
-
-        // Try to recover by re-initializing after a short delay
-        setTimeout(() => {
-          try {
-            if (index === activeIndex) {
-              // If this is the active player, try to recover
-              player.setup({
-                playlist: [{
-                  mediaid: mediaId,
-                  title: videoItem.title,
-                  sources: videoItem.sources,
-                  tracks: videoItem.tracks || []
-                }],
-                mute: isMuted,
-                autostart: true,
-                controls: false,
-                width: '100%',
-                height: '100%',
-                preload: 'auto',
-                androidhls: true,
-                backgroundcolor: '#000000',
-                stretching: 'fill',
-                aspectratio: false,
-                // High quality settings
-                qualityLabels: true,
-                defaultBandwidthEstimate: defaultBandwidthEstimate,
-                startQuality: networkQualityRef.current.isHighQuality ? 'high' : 'auto'
-              });
-
-              // Force load and play
-              player.load();
-              if (!pausedPlayers.has(mediaId)) {
-                player.play();
-              }
-            }
-          } catch (recoverError) {
-            console.error(`Recovery failed for ${mediaId}:`, recoverError);
-          }
-        }, 1000);
-      });
-
-      // Handle first frame to set high quality if network allows
-      player.on('firstFrame', () => {
-        if (!isMountedRef.current) return;
-
-        // Wait a bit for bandwidth detection, then set highest quality if appropriate
-        if (networkQualityRef.current.isHighQuality) {
-          setTimeout(() => {
-            setHighestQuality(mediaId);
-          }, 2000);
-        }
-      });
-
-      // Set up optimized event listeners
+      // Time event for UI updates
       player.on('time', (e: any) => {
         if (!isMountedRef.current) return;
-
-        // OPTIMIZATION 3: Use the batched update function
-        updateVideoUIState(mediaId, e.position, e.duration, index === activeIndex);
+        updateVideoUIState(mediaId, e.position, e.duration);
       });
 
+      // Video complete handler
       player.on('complete', () => {
         if (!isMountedRef.current) return;
 
@@ -783,66 +464,91 @@ const ContentStoriesV3: React.FC<Props> = ({
         }
       });
 
-      // Add a buffer event listener to know when the video is actually ready to play
-      player.on('buffer', (e: any) => {
-        if (!isMountedRef.current) return;
-
-        // If buffer is full enough (>= 5%), we can consider it ready to play
-        // Using a lower threshold for faster startup
-        if (e.bufferPercent >= 5 && index === activeIndex && !pausedPlayers.has(mediaId)) {
-          player.play();
-        }
-      });
-
+      // Ready event handler
       player.on('ready', () => {
         if (!isMountedRef.current) return;
 
-        // Mark as initialized
+        console.log(`Player ready for ${mediaId}`);
         setInitializedPlayers(prev => new Set([...prev, mediaId]));
+        setPlayersReady(prev => new Set([...prev, mediaId]));
 
-        player.setMute(isMuted);
-
-
-        // If this is the active video, start buffering it
-        // We'll play it once buffer event fires with enough data
-        if (index === activeIndex && !pausedPlayers.has(mediaId)) {
-          // Start loading the video data
-          player.load();
-
-
+        // If this is the active video and not preloading, play it
+        if (index === activeIndex && !preloadOnly) {
           if (isMobile) {
-            if (isMuted) {
-              player.play();
-            } else {
-              // For unmuted on mobile, we need to wait for user interaction
-              // or the video may not play due to autoplay restrictions
-              player.once('userActive', () => {
-                player.play();
-              });
+            // On mobile always start muted (will unmute after if needed)
+            player.setMute(true);
+            player.play();
+
+            // If we need to be unmuted, do it after a short delay
+            if (!isMuted || unmutedRef.current) {
+              unmutedRef.current = true; // Set the reference
+              setTimeout(() => {
+                try {
+                  if (player) {
+                    player.setMute(false);
+                    console.log(`Unmuting player ${mediaId} after ready`);
+                  }
+                } catch (e) {
+                  console.error("Error unmuting on ready:", e);
+                }
+              }, 250);
             }
           } else {
-            // Desktop can play without restrictions
+            // On desktop apply unmuted state if user previously unmuted
+            const shouldBeMuted = unmutedRef.current ? false : isMuted;
+            player.setMute(shouldBeMuted);
             player.play();
           }
-
-
-
-
         }
       });
 
-      // Handle quality level changes for debugging
-      player.on('levels', () => {
-        const levels = player.getQualityLevels();
-        console.log(`Available quality levels for ${mediaId}:`,
-          levels.map((l: any) => ({ label: l.label, bitrate: l.bitrate }))
-        );
+      // Error handler with recovery attempt
+      player.on('error', (e: any) => {
+        console.error(`Player error for ${mediaId}:`, e);
+
+        // Try to recover
+        setTimeout(() => {
+          if (!isMountedRef.current) return;
+
+          try {
+            player.setup({
+              playlist: [{
+                mediaid: mediaId,
+                title: videoItem.title,
+                sources: videoItem.sources,
+                tracks: videoItem.tracks || []
+              }],
+              mute: true, // Always start muted, we'll update later
+              autostart: false,
+              controls: false,
+              width: '100%',
+              height: '100%',
+              preload: 'auto',
+              androidhls: true,
+              backgroundcolor: '#000000',
+              stretching: 'fill'
+            });
+
+            if (index === activeIndex && !preloadOnly) {
+              player.play();
+
+              // Special handling for mobile unmuted
+              if (isMobile && (!isMuted || unmutedRef.current)) {
+                unmutedRef.current = true; // Set the reference
+                setTimeout(() => {
+                  if (player) player.setMute(false);
+                }, 250);
+              }
+            }
+          } catch (e) {
+            console.error("Error recovering player:", e);
+          }
+        }, 1000);
       });
 
     } catch (error) {
       console.error(`Error initializing player for ${mediaId}:`, error);
     } finally {
-      // Clear the pending operation flag
       delete pendingOperationsRef.current[mediaId];
     }
   };
@@ -851,19 +557,32 @@ const ContentStoriesV3: React.FC<Props> = ({
   const handleVideoClick = (mediaId: string) => {
     if (!initializedPlayers.has(mediaId)) return;
 
-    const player = window.jwplayer(`jwplayer-${mediaId}`);
-    if (player) {
-      if (player.getState() === 'playing') {
-        player.pause();
-        setPausedPlayers(prev => new Set([...prev, mediaId]));
+    const player = playerInstancesRef.current[mediaId];
+    if (!player) return;
+
+    // Mark this as an explicit user pause, not auto-pause
+    if (player.getState() === 'playing') {
+      player.pause();
+      setPausedPlayers(prev => new Set([...prev, mediaId]));
+    } else {
+      player.play();
+
+      // On mobile with unmuted, special handling
+      if (isMobile && (!isMuted || unmutedRef.current)) {
+        unmutedRef.current = true; // Set the reference
+        setTimeout(() => {
+          if (player) player.setMute(false);
+        }, 250);
       } else {
-        player.play();
-        setPausedPlayers(prev => {
-          const newSet = new Set([...prev]);
-          newSet.delete(mediaId);
-          return newSet;
-        });
+        // Ensure correct mute state based on global and unmuted reference
+        player.setMute(unmutedRef.current ? false : isMuted);
       }
+
+      setPausedPlayers(prev => {
+        const newSet = new Set([...prev]);
+        newSet.delete(mediaId);
+        return newSet;
+      });
     }
   };
 
@@ -872,27 +591,52 @@ const ContentStoriesV3: React.FC<Props> = ({
     const newMuteState = !isMuted;
     setIsMuted(newMuteState);
 
+    // Update unmuted reference when user explicitly changes mute state
+    unmutedRef.current = !newMuteState;
+
+    console.log(`Setting mute state to ${newMuteState ? 'muted' : 'unmuted'}, unmutedRef: ${unmutedRef.current}`);
+
     // Apply to all initialized players
     mediaIds.forEach(mediaId => {
-      if (initializedPlayers.has(mediaId)) {
-        const player = window.jwplayer(`jwplayer-${mediaId}`);
+      if (playersReady.has(mediaId)) {
+        const player = playerInstancesRef.current[mediaId];
         if (player) {
-          player.setMute(newMuteState);
+          // Special handling for mobile when unmuting
+          if (isMobile && !newMuteState && activeIndex !== null && mediaId === mediaIds[activeIndex]) {
+            // The two-step approach: ensure we're playing first
+            if (player.getState() !== 'playing') {
+              player.play();
+            }
+
+            // Then unmute after a brief delay
+            setTimeout(() => {
+              if (player) player.setMute(false);
+            }, 250);
+          } else {
+            // Normal case
+            player.setMute(newMuteState);
+          }
         }
       }
     });
   };
 
-  // Handle arrow buttons
+  // Handle navigation between videos
   const transitionToVideo = (fromIndex: number, toIndex: number) => {
     if (fromIndex === toIndex || toIndex < 0 || toIndex >= mediaIds.length) return;
 
-    // Get the element reference for the target video
-    const targetElement = videoRefs.current[mediaIds[toIndex]];
+    // Mark that we're programmatically scrolling (not a user pause)
+    userScrollingRef.current = true;
 
-    // Scroll to the target video container smoothly
+    // Scroll to the target video
+    const targetElement = videoRefs.current[mediaIds[toIndex]];
     if (targetElement) {
       targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+      // Reset the scrolling flag after animation completes
+      setTimeout(() => {
+        userScrollingRef.current = false;
+      }, 1000);
     }
   };
 
@@ -900,11 +644,33 @@ const ContentStoriesV3: React.FC<Props> = ({
   const handleSeek = (e: React.MouseEvent, mediaId: string) => {
     if (!initializedPlayers.has(mediaId)) return;
 
-    const player = window.jwplayer(`jwplayer-${mediaId}`);
+    const player = playerInstancesRef.current[mediaId];
     if (player) {
       const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
       const percentage = (e.clientX - rect.left) / rect.width;
       player.seek(percentage * player.getDuration());
+
+      // Make sure we're playing after a seek
+      if (player.getState() !== 'playing') {
+        player.play();
+
+        // Handle mute state correctly
+        if (isMobile && (!isMuted || unmutedRef.current)) {
+          unmutedRef.current = true; // Set the reference
+          setTimeout(() => {
+            if (player) player.setMute(false);
+          }, 250);
+        } else {
+          player.setMute(unmutedRef.current ? false : isMuted);
+        }
+
+        // Remove from paused set since user wants to play
+        setPausedPlayers(prev => {
+          const newSet = new Set([...prev]);
+          newSet.delete(mediaId);
+          return newSet;
+        });
+      }
     }
   };
 
@@ -918,7 +684,6 @@ const ContentStoriesV3: React.FC<Props> = ({
       <div
         className={styles.container}
         style={{
-          // Add these CSS variables based on isInDNApp state
           '--overlay-bottom-offset': isInDNApp ? '110px' : '25px',
           '--controls-bottom-offset': isInDNApp ? '160px' : '30px',
           '--seekbar-bottom-offset': isInDNApp ? '100px' : '15px',
@@ -960,25 +725,25 @@ const ContentStoriesV3: React.FC<Props> = ({
                   className={styles.video}
                 />
 
-                {/* Loading indicator - show while loading or buffering */}
-                {(!initializedPlayers.has(mediaId) ||
+                {/* Loading indicator */}
+                {(!playersReady.has(mediaId) ||
                   (index === activeIndex &&
-                    initializedPlayers.has(mediaId) &&
+                    playersReady.has(mediaId) &&
                     playerInstancesRef.current[mediaId]?.getState() === 'buffering')) && (
                     <div className={styles.loadingIndicator}></div>
                   )}
 
-                {/* Pause indicator */}
-                {pausedPlayers.has(mediaId) && initializedPlayers.has(mediaId) && (
+                {/* Pause indicator - only show for user-initiated pauses */}
+                {pausedPlayers.has(mediaId) && playersReady.has(mediaId) && (
                   <div
                     className={styles.pauseIndicator}
-                    onClick={() => handleVideoClick(mediaId)} // Add this line
+                    onClick={() => handleVideoClick(mediaId)}
                   >
                     <Pause size={48} color="white" />
                   </div>
                 )}
 
-                {/* Video overlay - show for all videos */}
+                {/* Video overlay */}
                 <div className={`${styles.videoOverlay} ${index === activeIndex ? styles.activeOverlay : styles.inactiveOverlay}`}>
                   <div className={styles.titleContainer}>
                     {inputCtaTekst && inputCtaTekst !== 'none' && showCtaElements[mediaId] && (
@@ -1001,7 +766,7 @@ const ContentStoriesV3: React.FC<Props> = ({
                         </div>
                       )
                     )}
-                    {/* Only show title if showTitles[mediaId] is true */}
+                    {/* Title display */}
                     {showTitles[mediaId] && (
                       <div className={styles.title}>
                         {titles[mediaId] || ''}
@@ -1014,7 +779,7 @@ const ContentStoriesV3: React.FC<Props> = ({
                   </div>
                 </div>
 
-                {/* Seek bar - show for all videos */}
+                {/* Seek bar */}
                 <div
                   className={`${styles.seekBarContainer} ${index === activeIndex ? styles.activeSeekBar : styles.inactiveSeekBar}`}
                 >
@@ -1037,7 +802,7 @@ const ContentStoriesV3: React.FC<Props> = ({
         {/* Controls */}
         <div className={styles.controls}>
           <div className={styles.controlButton} onClick={handleMute}>
-            {isMuted ? <VolumeOff size={16} /> : <Volume2 size={16} />}
+            {isMuted && !unmutedRef.current ? <VolumeOff size={16} /> : <Volume2 size={16} />}
           </div>
 
           {!isMobile && (
@@ -1052,8 +817,6 @@ const ContentStoriesV3: React.FC<Props> = ({
               </div>
             </>
           )}
-
-
         </div>
       </div>
     </>
@@ -1083,7 +846,6 @@ registerVevComponent(ContentStoriesV3, {
     { selector: styles.title, properties: ["font-size"] },
     { selector: styles.length, properties: ["font-size"] },
     { selector: styles.videoWrapper, properties: ["box-shadow", "border-radius"] },
-
   ],
   type: "both",
 });
