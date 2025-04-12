@@ -34,11 +34,11 @@
 .logo,
 .topText {
   pointer-events: auto;
-  /* Enable clicks only on these elements */
+
 }
 
 .logo {
-  height: 20px;
+  height: 25px;
   max-width: 100px;
 }
 
@@ -144,7 +144,7 @@
 }
 
 .titleContainer {
-  max-width: 80%;
+  max-width: 100%;
   pointer-events: auto;
 }
 
@@ -163,11 +163,10 @@
   font-size: 10px;
   opacity: 0.8;
   text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.9);
-
   display: inline-block;
 }
 
-/* CTA styling */
+/* CTA styling - Modified to match seekbar width */
 .ctaBox {
   display: flex;
   flex-direction: row;
@@ -178,7 +177,9 @@
   text-decoration: none;
   align-items: center;
   pointer-events: auto;
-  /* Ensure clickable */
+  max-width: 100%;
+  width: auto;
+  /* Match the width of seekbar (left 20px + right 20px) */
 }
 
 .ctaContent {
@@ -262,7 +263,6 @@
   transition: opacity 0.3s;
   pointer-events: auto;
   cursor: pointer;
-
 }
 
 /* Progress bar */
@@ -398,7 +398,6 @@
   background: rgba(255, 255, 255, 0.3);
 }
 
-
 .mobilePlayButton {
   position: absolute;
   top: 0;
@@ -429,14 +428,12 @@
 
 /* Mobile styles */
 @media (max-width: 768px) {
-
   .wrapper {
     height: 100dvh;
     /* Apply to wrapper too */
     overflow-y: auto;
     scroll-snap-type: y mandatory;
   }
-
 
   /* Force video container to fill 100% of viewport with no margins */
   .videoContainer {
@@ -504,21 +501,47 @@
     padding-bottom: 15px;
   }
 
+  /* Set special positioning for DNApp mute button */
+  body[data-dnapp="true"] .controls {
+    bottom: max(env(safe-area-inset-bottom, 0) + 70px, 100px) !important;
+    /* 50px higher */
+    right: max(env(safe-area-inset-right, 0) + 5px, 15px) !important;
+    /* 5px to the left */
+  }
 
-
+  /* Default controls position for mobile */
   .controls {
     position: fixed;
-    bottom: max(env(safe-area-inset-bottom, 0) + 20px, 50px) !important;
+    top: max(env(safe-area-inset-top, 0) + 70px, 70px) !important;
     right: max(env(safe-area-inset-right, 0) + 10px, 20px) !important;
     z-index: 20;
   }
 
   .controlButton {
-    color: #13264A;
-    background-color: #fff;
+    color: #ffffff;
+    background-color: rgba(70, 70, 70, 0.367);
+    border: none;
+    width: 30px;
+    height: 30px;
   }
 
+  .controlButton:hover {
+    background-color: rgba(70, 70, 70, 0.367);
+  }
 
+  .controlButtonWithText {
+    width: auto;
+    min-width: 80px;
+    padding-left: 12px;
+    padding-right: 10px;
+  }
+
+  .unmuteText {
+    color: white;
+    font-family: Book20;
+    font-size: 10px;
+    white-space: nowrap;
+  }
 
   .videoOverlay {
     bottom: max(env(safe-area-inset-bottom, 0) + 40px, 20px) !important;
@@ -536,7 +559,11 @@
     /* Increased touch target */
   }
 
-
+  /* Make ctaBox match seekbar width on mobile as well */
+  .ctaBox {
+    width: calc(100% - 30px);
+    /* Adjusted for mobile padding */
+  }
 
   .navigationButtons {
     display: none;
@@ -556,6 +583,11 @@
     .controls {
       /* Additional bottom padding for iOS bottom bar */
       bottom: max(env(safe-area-inset-bottom, 0) + 30px, 50px);
+    }
+
+    /* Ensure DNApp position is maintained on iOS */
+    body[data-dnapp="true"] .controls {
+      bottom: max(env(safe-area-inset-bottom, 0) + 70px, 100px) !important;
     }
   }
 }

@@ -37,6 +37,7 @@ type Props = {
   inputCtaImage: ImageProp;
   titleDisplayTime: number;
   ctaDisplayTime: number;
+  showUnmuteTextTime: number;
 };
 
 const formatTime = (seconds: number): string => {
@@ -55,7 +56,8 @@ const ContentStoriesV3: React.FC<Props> = ({
   inputCtaTekst,
   inputCtaImage,
   titleDisplayTime,
-  ctaDisplayTime
+  ctaDisplayTime,
+  showUnmuteTextTime
 }) => {
   // Core state
   const [mediaIds, setMediaIds] = useState<string[]>([]);
@@ -75,6 +77,11 @@ const ContentStoriesV3: React.FC<Props> = ({
   const [safeAreaInsets, setSafeAreaInsets] = useState({
     top: 0, right: 0, bottom: 0, left: 0
   });
+  const [showUnmuteText, setShowUnmuteText] = useState<boolean>(true);
+  const [showingUnmuteTextForVideos, setShowingUnmuteTextForVideos] = useState<Set<string>>(new Set());
+
+  // Add state for CTA content from JW Player
+  const [ctaContent, setCtaContent] = useState<{ [key: string]: { text: string, link: string } }>({});
 
   // Player state tracking
   const [pausedPlayers, setPausedPlayers] = useState<Set<string>>(new Set());
@@ -143,7 +150,15 @@ const ContentStoriesV3: React.FC<Props> = ({
   // Device detection
   useEffect(() => {
     const userAgentString = navigator.userAgent;
-    setIsInDNApp(userAgentString.includes("DNApp"));
+    const isInDNAppValue = userAgentString.includes("DNApp");
+    setIsInDNApp(isInDNAppValue);
+
+    // Set a data attribute on the body element to enable DNApp-specific CSS
+    if (isInDNAppValue) {
+      document.body.setAttribute('data-dnapp', 'true');
+    } else {
+      document.body.removeAttribute('data-dnapp');
+    }
 
     const handleResize = () => {
       if (!isMountedRef.current) return;
@@ -178,7 +193,11 @@ const ContentStoriesV3: React.FC<Props> = ({
     handleResize();
 
     window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      // Clean up the data attribute when component unmounts
+      document.body.removeAttribute('data-dnapp');
+    };
   }, []);
 
   // Clean up on unmount
@@ -228,6 +247,26 @@ const ContentStoriesV3: React.FC<Props> = ({
             orderedPlaylist = [initialItem, ...orderedPlaylist];
           }
         }
+
+        // Process custom parameters for CTA content
+        orderedPlaylist.forEach((item: any) => {
+          const mediaId = item.mediaid;
+
+          // Check for custom parameters at the root level of the item
+          const ctaText = item.cStoriesCtaText;
+          const ctaLink = item.cStoriesCtaLink;
+
+          if (ctaText || ctaLink) {
+            console.log(`Found custom parameters for ${mediaId}: Text=${ctaText}, Link=${ctaLink}`);
+            setCtaContent(prev => ({
+              ...prev,
+              [mediaId]: {
+                text: ctaText || '',
+                link: ctaLink || ''
+              }
+            }));
+          }
+        });
 
         setMediaIds(orderedPlaylist.map((item: any) => item.mediaid));
       } catch (err) {
@@ -562,6 +601,23 @@ const ContentStoriesV3: React.FC<Props> = ({
       setShowTitles(prev => ({ ...prev, [mediaId]: true }));
       setShowCtaElements(prev => ({ ...prev, [mediaId]: false }));
 
+      // Check for custom parameters in the individual media item
+      if (videoItem.custom && typeof videoItem.custom === 'object') {
+        const ctaText = videoItem.custom.cStoriesCtaText;
+        const ctaLink = videoItem.custom.cStoriesCtaLink;
+
+        if (ctaText || ctaLink) {
+          console.log(`Found custom parameters for ${mediaId} in media item: Text=${ctaText}, Link=${ctaLink}`);
+          setCtaContent(prev => ({
+            ...prev,
+            [mediaId]: {
+              text: ctaText || '',
+              link: ctaLink || ''
+            }
+          }));
+        }
+      }
+
       // Initialize JW Player
       const player = window.jwplayer(`jwplayer-${mediaId}`);
       playerInstancesRef.current[mediaId] = player;
@@ -584,9 +640,11 @@ const ContentStoriesV3: React.FC<Props> = ({
         height: '100%',
         preload: 'auto',
         androidhls: true,
-        backgroundcolor: '#000000',
+        backgroundcolor: '#13264A',
         stretching: 'fill',
         aspectratio: false,
+        primary: 'html5',
+        hlsjsdefault: true,
         // Mobile settings 
         mobileSettings: {
           autostart: false, // Don't autostart yet
@@ -743,7 +801,7 @@ const ContentStoriesV3: React.FC<Props> = ({
           if (player) player.setMute(false);
         }, 250);
       } else {
-        // Ensure correct mute state based on global and unmuted reference
+        // Normal case
         player.setMute(unmutedRef.current ? false : isMuted);
       }
 
@@ -764,6 +822,14 @@ const ContentStoriesV3: React.FC<Props> = ({
     unmutedRef.current = !newMuteState;
 
     console.log(`Setting mute state to ${newMuteState ? 'muted' : 'unmuted'}, unmutedRef: ${unmutedRef.current}`);
+
+    if (!newMuteState) {
+      setShowUnmuteText(false);
+
+      // Also clear any currently showing text
+      setShowingUnmuteTextForVideos(new Set());
+    }
+
 
     // Apply to all initialized players
     mediaIds.forEach(mediaId => {
@@ -789,6 +855,39 @@ const ContentStoriesV3: React.FC<Props> = ({
       }
     });
   };
+
+  useEffect(() => {
+    if (!isMobile || !showUnmuteText || activeIndex === null || showUnmuteTextTime <= 0) return;
+
+    const currentMediaId = mediaIds[activeIndex];
+
+    // Skip if we're already showing the text for this video (to avoid duplicating timers)
+    if (showingUnmuteTextForVideos.has(currentMediaId)) return;
+
+    console.log(`Setting up to show unmute text for video ${currentMediaId}`);
+
+    // Mark that we're showing the unmute text for this video
+    setShowingUnmuteTextForVideos(prev => new Set([...prev, currentMediaId]));
+
+    // Set a timeout to hide the unmute text after the configured time
+    const timer = setTimeout(() => {
+      if (isMountedRef.current) {
+        console.log(`Unmute text timeout finished for video ${currentMediaId}`);
+
+        // Remove this video from showing text
+        setShowingUnmuteTextForVideos(prev => {
+          const newSet = new Set([...prev]);
+          newSet.delete(currentMediaId);
+          return newSet;
+        });
+      }
+    }, showUnmuteTextTime * 1000);
+
+    return () => {
+      clearTimeout(timer);
+      console.log(`Cleared unmute text timer for video ${currentMediaId}`);
+    };
+  }, [activeIndex, isMobile, showUnmuteText, showUnmuteTextTime, mediaIds]);
 
   // Handle navigation between videos
   const transitionToVideo = (fromIndex: number, toIndex: number) => {
@@ -843,6 +942,28 @@ const ContentStoriesV3: React.FC<Props> = ({
     }
   };
 
+  // Helper function to get the current CTA text for a media
+  const getCtaText = (mediaId: string): string => {
+    // First check if we have a custom CTA text from JW Player
+    if (ctaContent[mediaId]?.text) {
+      return ctaContent[mediaId].text;
+    }
+
+    // Otherwise fall back to the VEV input
+    return inputCtaTekst;
+  };
+
+  // Helper function to get the current CTA link for a media
+  const getCtaLink = (mediaId: string): string => {
+    // First check if we have a custom CTA link from JW Player
+    if (ctaContent[mediaId]?.link) {
+      return ctaContent[mediaId].link;
+    }
+
+    // Otherwise fall back to the VEV input
+    return inputCtaLink;
+  };
+
   return (
     <>
       <Helmet>
@@ -850,15 +971,7 @@ const ContentStoriesV3: React.FC<Props> = ({
         <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
       </Helmet>
 
-      <div
-        className={styles.container}
-        style={{
-          '--overlay-bottom-offset': isInDNApp ? '110px' : '25px',
-          '--controls-bottom-offset': isInDNApp ? '160px' : '30px',
-          '--seekbar-bottom-offset': isInDNApp ? '100px' : '15px',
-          '--seekbar-width-offset': isInDNApp ? '110px' : '40px',
-        } as React.CSSProperties}
-      >
+      <div className={styles.container}>
         {/* Top Bar */}
         <div className={styles.topBar}>
           <span className={styles.topText}>{topText}</span>
@@ -915,26 +1028,37 @@ const ContentStoriesV3: React.FC<Props> = ({
                 {/* Video overlay */}
                 <div className={`${styles.videoOverlay} ${index === activeIndex ? styles.activeOverlay : styles.inactiveOverlay}`}>
                   <div className={styles.titleContainer}>
-                    {inputCtaTekst && inputCtaTekst !== 'none' && showCtaElements[mediaId] && (
-                      inputCtaLink ? (
-                        <a href={inputCtaLink} target="_parent" className={styles.ctaBox}>
-                          {inputCtaImage?.url && (
-                            <div className={styles.ctaImageContainer}>
-                              <img src={inputCtaImage.url} className={styles.ctaImage} alt="CTA" />
+                    {/* CTA box - using the helper functions to get the text and link */}
+                    {showCtaElements[mediaId] && (
+                      (() => {
+                        const ctaText = getCtaText(mediaId);
+                        const ctaLink = getCtaLink(mediaId);
+
+                        // Only show if we have text and it's not 'none'
+                        if (ctaText && ctaText !== 'none') {
+                          return ctaLink ? (
+                            <a href={ctaLink} target="_parent" className={styles.ctaBox}>
+                              {inputCtaImage?.url && (
+                                <div className={styles.ctaImageContainer}>
+                                  <img src={inputCtaImage.url} className={styles.ctaImage} alt="CTA" />
+                                </div>
+                              )}
+                              <div className={styles.ctaContent}>
+                                {ctaText}
+                              </div>
+                            </a>
+                          ) : (
+                            <div className={styles.ctaBox}>
+                              <div className={styles.ctaContent}>
+                                {ctaText}
+                              </div>
                             </div>
-                          )}
-                          <div className={styles.ctaContent}>
-                            {inputCtaTekst}
-                          </div>
-                        </a>
-                      ) : (
-                        <div className={styles.ctaBox}>
-                          <div className={styles.ctaContent}>
-                            {inputCtaTekst}
-                          </div>
-                        </div>
-                      )
+                          );
+                        }
+                        return null;
+                      })()
                     )}
+
                     {/* Title display */}
                     {showTitles[mediaId] && (
                       <div className={styles.title}>
@@ -970,9 +1094,21 @@ const ContentStoriesV3: React.FC<Props> = ({
 
         {/* Controls */}
         <div className={styles.controls}>
-          <div className={styles.controlButton} onClick={handleMute}>
+          {/* Mute button - with or without text */}
+          <div
+            className={`${styles.controlButton} ${isMobile && showUnmuteText && activeIndex !== null &&
+              showingUnmuteTextForVideos.has(mediaIds[activeIndex]) &&
+              showUnmuteTextTime > 0 ? styles.controlButtonWithText : ''}`}
+            onClick={handleMute}
+          >
+            {isMobile && showUnmuteText && activeIndex !== null &&
+              showingUnmuteTextForVideos.has(mediaIds[activeIndex]) &&
+              showUnmuteTextTime > 0 && (
+                <span className={styles.unmuteText}>Slå på lyd&nbsp;&nbsp;</span>
+              )}
             {isMuted && !unmutedRef.current ? <VolumeOff size={16} /> : <Volume2 size={16} />}
           </div>
+
 
           {!isMobile && (
             <>
@@ -987,6 +1123,7 @@ const ContentStoriesV3: React.FC<Props> = ({
             </>
           )}
         </div>
+
       </div>
     </>
   );
@@ -1004,7 +1141,8 @@ registerVevComponent(ContentStoriesV3, {
     { name: "inputCtaImage", type: "image" },
     { name: "inputCtaTekst", type: "string" },
     { name: "inputCtaLink", type: "string" },
-    { name: "ctaDisplayTime", type: "number", initialValue: 5 }
+    { name: "ctaDisplayTime", type: "number", initialValue: 5 },
+    { name: "showUnmuteTextTime", type: "number", initialValue: 5, description: "Time in seconds to show unmute text (0 = disabled)" }
   ],
   editableCSS: [
     { selector: styles.container, properties: ["background"] },
@@ -1015,6 +1153,8 @@ registerVevComponent(ContentStoriesV3, {
     { selector: styles.title, properties: ["font-size"] },
     { selector: styles.length, properties: ["font-size"] },
     { selector: styles.videoWrapper, properties: ["box-shadow", "border-radius"] },
+    { selector: styles.unmuteTextContainer, properties: ["background", "border-radius", "padding"] },
+    { selector: styles.unmuteText, properties: ["color", "font-size"] }
   ],
   type: "both",
 });
