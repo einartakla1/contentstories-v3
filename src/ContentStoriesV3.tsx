@@ -38,6 +38,14 @@ type Props = {
   titleDisplayTime: number;
   ctaDisplayTime: number;
   showUnmuteTextTime: number;
+  testDNApp: boolean; // Add this new property
+};
+
+// Caption type definition
+type Caption = {
+  start: number;
+  end: number;
+  text: string;
 };
 
 const formatTime = (seconds: number): string => {
@@ -45,6 +53,11 @@ const formatTime = (seconds: number): string => {
   const remainingSeconds = Math.floor(seconds % 60);
   return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
 };
+
+const DNAPP_BOTTOM_SPACING = 80; // Change from 100px to 80px
+const CAPTION_TOLERANCE = 0.3; // 300ms tolerance for caption matching
+
+
 
 const ContentStoriesV3: React.FC<Props> = ({
   initialPlaylistId,
@@ -57,7 +70,8 @@ const ContentStoriesV3: React.FC<Props> = ({
   inputCtaImage,
   titleDisplayTime,
   ctaDisplayTime,
-  showUnmuteTextTime
+  showUnmuteTextTime,
+  testDNApp
 }) => {
   // Core state
   const [mediaIds, setMediaIds] = useState<string[]>([]);
@@ -80,7 +94,14 @@ const ContentStoriesV3: React.FC<Props> = ({
   const [showUnmuteText, setShowUnmuteText] = useState<boolean>(true);
   const [showingUnmuteTextForVideos, setShowingUnmuteTextForVideos] = useState<Set<string>>(new Set());
 
-  // Add state for CTA content from JW Player
+  // Cache
+  const _fetchCache = new Map<string, any>();
+
+
+  // Caption state
+  const [captionsData, setCaptionsData] = useState<{ [key: string]: Caption[] }>({});
+
+  // Add state for CTA content and captions from JW Player
   const [ctaContent, setCtaContent] = useState<{ [key: string]: { text: string, link: string } }>({});
 
   // Player state tracking
@@ -97,29 +118,152 @@ const ContentStoriesV3: React.FC<Props> = ({
   const observerRef = useRef<IntersectionObserver | null>(null);
   const userScrollingRef = useRef<boolean>(false);
   const unmutedRef = useRef<boolean>(false); // Reference to track unmuted state
+  const captionFetchAttemptsRef = useRef<{ [key: string]: number }>({});
+  const initialLoadingRef = useRef(false);
+
 
   const { disabled } = useEditorState();
 
-  // Simple fetch with retry function
-  const fetchWithRetry = async (url: string, retries = 3, delay = 300): Promise<any> => {
-    let lastError;
-
-    for (let i = 0; i < retries; i++) {
-      try {
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(`HTTP error ${response.status}`);
-        return await response.json();
-      } catch (error) {
-        console.warn(`Fetch attempt ${i + 1} failed for ${url}`, error);
-        lastError = error;
-
-        if (i < retries - 1) {
-          await new Promise(r => setTimeout(r, delay * Math.pow(2, i)));
-        }
-      }
+  // SRT parser function
+  const fetchAndParseSRT = async (url: string, mediaId: string) => {
+    // Skip if we've already tried too many times
+    if (!captionFetchAttemptsRef.current[mediaId]) {
+      captionFetchAttemptsRef.current[mediaId] = 0;
     }
 
-    throw lastError;
+    if (captionFetchAttemptsRef.current[mediaId] >= 3) {
+      return;
+    }
+
+    captionFetchAttemptsRef.current[mediaId]++;
+
+    try {
+      // Only fetch captions for active or next video to save bandwidth
+      const isActiveOrNextVideo =
+        activeIndex !== null &&
+        (mediaIds[activeIndex] === mediaId ||
+          (activeIndex < mediaIds.length - 1 && mediaIds[activeIndex + 1] === mediaId));
+
+      // If it's not the active or next video and we're on mobile with limited bandwidth,
+      // skip fetching captions for now
+      if (!isActiveOrNextVideo && isMobile && navigator.connection?.saveData) {
+        return;
+      }
+
+      const response = await fetch(url);
+      if (!response.ok) return;
+
+      const text = await response.text();
+      if (!text.includes('-->')) return;
+
+      // Parse the SRT file in a non-blocking way
+      setTimeout(() => {
+        if (!isMountedRef.current) return;
+        const captions = parseSRT(text);
+        if (captions.length > 0) {
+          setCaptionsData(prev => ({ ...prev, [mediaId]: captions }));
+        }
+      }, 10);
+    } catch (error) {
+      console.error(`Error parsing captions for ${mediaId}:`, error);
+    }
+  };
+
+  const parseSRT = (text: string): Caption[] => {
+    const captions: Caption[] = [];
+
+    // Normalize line endings and prepare the text
+    const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+    // Split into caption blocks - empty line is the separator
+    const blocks = normalizedText.split(/\n\s*\n/);
+
+    // Process each caption block
+    blocks.forEach((block, index) => {
+      try {
+        const lines = block.trim().split('\n');
+
+        if (lines.length >= 2) {
+          // Find the timecode line (contains -->)
+          const timecodeLineIndex = lines.findIndex(line => line.includes('-->'));
+          if (timecodeLineIndex === -1) return;
+
+          const timeLine = lines[timecodeLineIndex];
+          // Flexible regex to match various SRT time formats
+          const timeMatch = timeLine.match(/(\d+):(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+):(\d+):(\d+)[,.](\d+)/);
+
+          if (timeMatch) {
+            const startHours = parseInt(timeMatch[1]);
+            const startMins = parseInt(timeMatch[2]);
+            const startSecs = parseInt(timeMatch[3]);
+            const startMs = parseInt(timeMatch[4]);
+            const endHours = parseInt(timeMatch[5]);
+            const endMins = parseInt(timeMatch[6]);
+            const endSecs = parseInt(timeMatch[7]);
+            const endMs = parseInt(timeMatch[8]);
+
+            const startTime = (startHours * 3600) + (startMins * 60) + startSecs + (startMs / 1000);
+            const endTime = (endHours * 3600) + (endMins * 60) + endSecs + (endMs / 1000);
+
+            // Text content is everything after timecode line
+            const textContent = lines.slice(timecodeLineIndex + 1).join('\n');
+
+            if (textContent.trim()) {
+              captions.push({
+                start: startTime,
+                end: endTime,
+                text: textContent.trim()
+              });
+            }
+          }
+        }
+      } catch (e) {
+        console.warn(`Error parsing caption block ${index}:`, e);
+      }
+    });
+
+    // Log the first few captions for debugging
+    if (captions.length > 0) {
+      console.log(`First few captions parsed:`, captions.slice(0, 3));
+    }
+
+    return captions;
+  };
+
+  // Improved fetch with retry function
+  const fetchWithRetry = async (url: string, retries = 3, delay = 300): Promise<any> => {
+    try {
+      // Check cache first for identical URLs
+      if (_fetchCache.has(url)) {
+        return _fetchCache.get(url);
+      }
+
+      // Original fetch implementation with retries
+      let lastError;
+      for (let i = 0; i < retries; i++) {
+        try {
+          const response = await fetch(url);
+          if (!response.ok) throw new Error(`HTTP error ${response.status}`);
+          const data = await response.json();
+
+          // Cache successful results
+          _fetchCache.set(url, data);
+          return data;
+        } catch (error) {
+          console.warn(`Fetch attempt ${i + 1} failed for ${url}`, error);
+          lastError = error;
+
+          if (i < retries - 1) {
+            await new Promise(r => setTimeout(r, delay * Math.pow(2, i)));
+          }
+        }
+      }
+      throw lastError;
+    } catch (error) {
+      console.error(`Fetch error for ${url}:`, error);
+      // Return null or empty object to prevent crashes
+      return null;
+    }
   };
 
   // Load JW Player script
@@ -150,16 +294,20 @@ const ContentStoriesV3: React.FC<Props> = ({
   // Device detection
   useEffect(() => {
     const userAgentString = navigator.userAgent;
-    const isInDNAppValue = userAgentString.includes("DNApp");
+    const isInDNAppValue = userAgentString.includes("DNApp") || testDNApp; // Add testDNApp here
     setIsInDNApp(isInDNAppValue);
 
     // Set a data attribute on the body element to enable DNApp-specific CSS
     if (isInDNAppValue) {
       document.body.setAttribute('data-dnapp', 'true');
+      document.documentElement.style.setProperty('--dnapp-bottom-spacing', `${DNAPP_BOTTOM_SPACING}px`);
+
     } else {
       document.body.removeAttribute('data-dnapp');
+      document.documentElement.style.removeProperty('--dnapp-bottom-spacing');
     }
 
+    // Rest of the effect remains the same...
     const handleResize = () => {
       if (!isMountedRef.current) return;
       setIsMobile(window.innerWidth <= 768);
@@ -198,7 +346,7 @@ const ContentStoriesV3: React.FC<Props> = ({
       // Clean up the data attribute when component unmounts
       document.body.removeAttribute('data-dnapp');
     };
-  }, []);
+  }, [testDNApp]);
 
   // Clean up on unmount
   useEffect(() => {
@@ -297,6 +445,9 @@ const ContentStoriesV3: React.FC<Props> = ({
     if (showCtaElements[mediaId] !== shouldShowCta) {
       setShowCtaElements(prev => ({ ...prev, [mediaId]: shouldShowCta }));
     }
+
+    // Update current caption based on position
+
   };
 
   // Preload all players without starting them
@@ -588,26 +739,25 @@ const ContentStoriesV3: React.FC<Props> = ({
   const initializePlayer = async (mediaId: string, index: number, preloadOnly: boolean = false) => {
     if (!jwPlayerLoaded || initializedPlayers.has(mediaId) || pendingOperationsRef.current[mediaId]) return;
 
-    console.log(`Initializing player for ${mediaId} (muted: ${isMuted}, preloadOnly: ${preloadOnly})`);
     pendingOperationsRef.current[mediaId] = true;
 
     try {
       const data = await fetchWithRetry(`https://cdn.jwplayer.com/v2/media/${mediaId}`);
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current || !data) return;
 
       const videoItem = data.playlist[0];
 
+      // Keep the original state updates that work
       setTitles(prev => ({ ...prev, [mediaId]: videoItem.title }));
       setShowTitles(prev => ({ ...prev, [mediaId]: true }));
       setShowCtaElements(prev => ({ ...prev, [mediaId]: false }));
 
-      // Check for custom parameters in the individual media item
+      // Check for custom parameters
       if (videoItem.custom && typeof videoItem.custom === 'object') {
         const ctaText = videoItem.custom.cStoriesCtaText;
         const ctaLink = videoItem.custom.cStoriesCtaLink;
 
         if (ctaText || ctaLink) {
-          console.log(`Found custom parameters for ${mediaId} in media item: Text=${ctaText}, Link=${ctaLink}`);
           setCtaContent(prev => ({
             ...prev,
             [mediaId]: {
@@ -618,14 +768,27 @@ const ContentStoriesV3: React.FC<Props> = ({
         }
       }
 
-      // Initialize JW Player
+      // Check for captions track - only process if active or preload is false
+      if (!preloadOnly || index === activeIndex) {
+        if (videoItem.tracks && videoItem.tracks.length > 0) {
+          const captionTracks = videoItem.tracks.filter((track: any) =>
+            track.kind === 'captions' || track.kind === 'subtitles'
+          );
+
+          if (captionTracks.length > 0) {
+            const firstCaptionTrack = captionTracks[0];
+            if (firstCaptionTrack && firstCaptionTrack.file) {
+              fetchAndParseSRT(firstCaptionTrack.file, mediaId);
+            }
+          }
+        }
+      }
+
+      // Initialize JW Player with optimized settings
       const player = window.jwplayer(`jwplayer-${mediaId}`);
       playerInstancesRef.current[mediaId] = player;
 
-      // Always start muted on mobile regardless of state
-      // We'll unmute later if needed
-      const startMuted = true; // Always start muted, we'll unmute after playing starts if needed
-
+      // Setup player with optimized config
       player.setup({
         playlist: [{
           mediaid: mediaId,
@@ -633,7 +796,7 @@ const ContentStoriesV3: React.FC<Props> = ({
           sources: videoItem.sources,
           tracks: videoItem.tracks || []
         }],
-        mute: startMuted,
+        mute: false,
         autostart: index === 0, // Do not autostart on setup
         controls: false,
         width: '100%',
@@ -677,6 +840,46 @@ const ContentStoriesV3: React.FC<Props> = ({
         setInitializedPlayers(prev => new Set([...prev, mediaId]));
         setPlayersReady(prev => new Set([...prev, mediaId]));
 
+
+        const videoElement = document.querySelector(`#jwplayer-${mediaId} video`);
+        if (videoElement instanceof HTMLElement) {
+          videoElement.style.objectFit = "cover";
+          videoElement.style.objectPosition = "center bottom";
+          videoElement.style.top = "auto";
+          videoElement.style.bottom = "0";
+
+          // Apply different transform for DNApp mode
+          if (isInDNApp) {
+            // This pulls the video up while maintaining bottom alignment
+            videoElement.style.transform = "translateY(-75px)";
+
+            // Also update the container to ensure proper cutoff
+            const playerContainer = document.querySelector(`#jwplayer-${mediaId}`);
+            if (playerContainer instanceof HTMLElement) {
+              playerContainer.style.overflow = "hidden";
+            }
+
+            // Target the video wrapper to adjust height if needed
+            const videoWrapper = document.querySelector(`.${styles.videoWrapper}`);
+            if (videoWrapper instanceof HTMLElement) {
+              videoWrapper.style.overflow = "hidden";
+              // Optionally adjust height
+              // videoWrapper.style.height = "calc(100vh - 75px)";
+            }
+
+            // Target the video container if needed
+            const videoContainer = document.querySelector(`.${styles.videoContainer}`);
+            if (videoContainer instanceof HTMLElement) {
+              videoContainer.style.overflow = "hidden";
+            }
+          } else {
+            // Regular positioning
+            videoElement.style.transform = "translateX(0%)";
+          }
+        }
+
+
+
         // For first video, let autostart handle it (already set in setup)
         // Just mark it as triggered when ready
         if (index === 0) {
@@ -714,8 +917,47 @@ const ContentStoriesV3: React.FC<Props> = ({
             player.play();
           }
         }
+
+        // Check for caption tracks again in case they weren't in the initial data
+        const captionsList = player.getCaptionsList();
+        if (captionsList && captionsList.length > 1) { // Index 0 is usually "Off"
+          console.log(`Captions available from player for ${mediaId}:`, captionsList);
+
+          // If we haven't already loaded captions, try to get them from the first track
+          if (!captionsData[mediaId]) {
+            const firstTrack = captionsList[1];
+            if (typeof firstTrack.id === 'string' && (
+              firstTrack.id.endsWith('.srt') ||
+              firstTrack.id.endsWith('.vtt')
+            )) {
+              fetchAndParseSRT(firstTrack.id, mediaId);
+            }
+          }
+
+          // Turn off JW Player's built-in captions since we're using our own
+          player.setCurrentCaptions(0);
+        }
       });
 
+      player.on('captionsList', (e: any) => {
+        // If captions exist, get the URL and load our custom implementation
+        if (e.tracks && e.tracks.length > 0) {
+          console.log(`Captions available from event for ${mediaId}:`, e.tracks);
+
+          // Find the first caption track
+          const captionTrack = e.tracks.find((track: any) => track.id !== "off");
+
+          if (captionTrack && typeof captionTrack.id === 'string' && (
+            captionTrack.id.endsWith('.srt') ||
+            captionTrack.id.endsWith('.vtt')
+          )) {
+            fetchAndParseSRT(captionTrack.id, mediaId);
+          }
+
+          // Turn off JW Player's built-in captions
+          player.setCurrentCaptions(0);
+        }
+      });
 
       player.on('play', () => {
         // If this is the first video and it's now playing, mark it as triggered
@@ -753,7 +995,9 @@ const ContentStoriesV3: React.FC<Props> = ({
               preload: 'auto',
               androidhls: true,
               backgroundcolor: '#000000',
-              stretching: 'fill'
+              stretching: 'fill',
+              aspectratio: false, // Add this missing property
+
             });
 
             if (index === activeIndex && !preloadOnly) {
@@ -990,11 +1234,11 @@ const ContentStoriesV3: React.FC<Props> = ({
             <div
               key={mediaId}
               ref={el => videoRefs.current[mediaId] = el}
-              className={styles.videoContainer}
+              className={`${styles.videoContainer} ${isInDNApp ? styles.dnAppVideoContainer : ''}`}
               data-index={index}
               data-mediaid={mediaId}
             >
-              <div className={styles.videoWrapper}>
+              <div className={`${styles.videoWrapper} ${isInDNApp ? styles.dnAppVideoWrapper : ''}`}>
                 {/* Click layer for play/pause */}
                 <div
                   className={styles.videoClickLayer}
@@ -1006,6 +1250,32 @@ const ContentStoriesV3: React.FC<Props> = ({
                   id={`jwplayer-${mediaId}`}
                   className={styles.video}
                 />
+
+                {/* Caption rendering - only show when there's an active caption */}
+                {(() => {
+                  if (!captionsData[mediaId]) return null;
+
+                  const position = currentTimes[mediaId] || 0;
+                  const caption = captionsData[mediaId].find(cap =>
+                    position >= cap.start - CAPTION_TOLERANCE && position <= cap.end + CAPTION_TOLERANCE
+                  );
+
+                  // Only render the container if there's a caption to show
+                  if (!caption) return null;
+
+                  return (
+                    <div className={`${styles.customCaptionsContainer} ${isInDNApp ? styles.dnAppCustomCaptionsContainer : ''}`}>
+                      <div className={styles.customCaptions}>
+                        {caption.text.split('\n').map((line, i) => (
+                          <React.Fragment key={i}>
+                            {i > 0 && <br />}
+                            {line}
+                          </React.Fragment>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Loading indicator */}
                 {(!playersReady.has(mediaId) ||
@@ -1026,8 +1296,9 @@ const ContentStoriesV3: React.FC<Props> = ({
                 )}
 
                 {/* Video overlay */}
-                <div className={`${styles.videoOverlay} ${index === activeIndex ? styles.activeOverlay : styles.inactiveOverlay}`}>
+                <div className={`${styles.videoOverlay} ${index === activeIndex ? styles.activeOverlay : styles.inactiveOverlay} ${isInDNApp ? styles.dnAppOverlay : ''}`}>
                   <div className={styles.titleContainer}>
+
                     {/* CTA box - using the helper functions to get the text and link */}
                     {showCtaElements[mediaId] && (
                       (() => {
@@ -1037,7 +1308,11 @@ const ContentStoriesV3: React.FC<Props> = ({
                         // Only show if we have text and it's not 'none'
                         if (ctaText && ctaText !== 'none') {
                           return ctaLink ? (
-                            <a href={ctaLink} target="_parent" className={styles.ctaBox}>
+                            <a
+                              href={ctaLink}
+                              target="_blank"
+                              className={`${styles.ctaBox} ${isInDNApp ? styles.dnAppCta : ''}`}
+                            >
                               {inputCtaImage?.url && (
                                 <div className={styles.ctaImageContainer}>
                                   <img src={inputCtaImage.url} className={styles.ctaImage} alt="CTA" />
@@ -1048,7 +1323,7 @@ const ContentStoriesV3: React.FC<Props> = ({
                               </div>
                             </a>
                           ) : (
-                            <div className={styles.ctaBox}>
+                            <div className={`${styles.ctaBox} ${isInDNApp ? styles.dnAppCta : ''}`}>
                               <div className={styles.ctaContent}>
                                 {ctaText}
                               </div>
@@ -1074,7 +1349,7 @@ const ContentStoriesV3: React.FC<Props> = ({
 
                 {/* Seek bar */}
                 <div
-                  className={`${styles.seekBarContainer} ${index === activeIndex ? styles.activeSeekBar : styles.inactiveSeekBar}`}
+                  className={`${styles.seekBarContainer} ${index === activeIndex ? styles.activeSeekBar : styles.inactiveSeekBar} ${isInDNApp ? styles.dnAppSeekBar : ''}`}
                 >
                   <div
                     className={styles.seekBarProgress}
@@ -1084,7 +1359,7 @@ const ContentStoriesV3: React.FC<Props> = ({
 
                 {/* Larger clickable area for seek bar */}
                 <div
-                  className={styles.seekBarClickArea}
+                  className={`${styles.seekBarClickArea} ${isInDNApp ? styles.dnAppSeekBarClickArea : ''}`}
                   onClick={(e) => handleSeek(e, mediaId)}
                 />
               </div>
@@ -1109,7 +1384,6 @@ const ContentStoriesV3: React.FC<Props> = ({
             {isMuted && !unmutedRef.current ? <VolumeOff size={16} /> : <Volume2 size={16} />}
           </div>
 
-
           {!isMobile && (
             <>
               <div className={styles.controlButton}
@@ -1123,7 +1397,6 @@ const ContentStoriesV3: React.FC<Props> = ({
             </>
           )}
         </div>
-
       </div>
     </>
   );
@@ -1142,7 +1415,8 @@ registerVevComponent(ContentStoriesV3, {
     { name: "inputCtaTekst", type: "string" },
     { name: "inputCtaLink", type: "string" },
     { name: "ctaDisplayTime", type: "number", initialValue: 5 },
-    { name: "showUnmuteTextTime", type: "number", initialValue: 5, description: "Time in seconds to show unmute text (0 = disabled)" }
+    { name: "showUnmuteTextTime", type: "number", initialValue: 5, description: "Time in seconds to show unmute text (0 = disabled)" },
+    { name: "testDNApp", type: "boolean", initialValue: false, description: "Enable to test DNApp mode (for development only)" }
   ],
   editableCSS: [
     { selector: styles.container, properties: ["background"] },
@@ -1154,7 +1428,8 @@ registerVevComponent(ContentStoriesV3, {
     { selector: styles.length, properties: ["font-size"] },
     { selector: styles.videoWrapper, properties: ["box-shadow", "border-radius"] },
     { selector: styles.unmuteTextContainer, properties: ["background", "border-radius", "padding"] },
-    { selector: styles.unmuteText, properties: ["color", "font-size"] }
+    { selector: styles.unmuteText, properties: ["color", "font-size"] },
+    { selector: styles.logo, properties: ["height"] }
   ],
   type: "both",
 });
