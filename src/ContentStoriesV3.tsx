@@ -843,34 +843,51 @@ const ContentStoriesV3: React.FC<Props> = ({
 
         const videoElement = document.querySelector(`#jwplayer-${mediaId} video`);
         if (videoElement instanceof HTMLElement) {
+          // Default setup - keep object-fit: cover to fill the container
           videoElement.style.objectFit = "cover";
-          videoElement.style.objectPosition = "center bottom";
+          videoElement.style.objectPosition = "center bottom"; // Keep bottom alignment
           videoElement.style.top = "auto";
           videoElement.style.bottom = "0";
 
-          // Apply different transform for DNApp mode
+          // Apply different settings for DNApp mode
           if (isInDNApp) {
+            // Keep "cover" to maintain filling behavior while allowing cropping
+            // This maintains the bottom alignment while ensuring full width
+            videoElement.style.objectFit = "cover";
+
             // This pulls the video up while maintaining bottom alignment
             videoElement.style.transform = "translateY(-75px)";
 
-            // Also update the container to ensure proper cutoff
+            // Set to 100% width to ensure the video spans the full container width
+            videoElement.style.width = "100%";
+            videoElement.style.maxWidth = "none";
+
+            // Make sure the video is positioned properly
+            videoElement.style.left = "0";
+            videoElement.style.right = "0";
+
+            // Also update the container for full width
             const playerContainer = document.querySelector(`#jwplayer-${mediaId}`);
             if (playerContainer instanceof HTMLElement) {
               playerContainer.style.overflow = "hidden";
+              playerContainer.style.width = "100%";
+              playerContainer.style.maxWidth = "none";
             }
 
-            // Target the video wrapper to adjust height if needed
+            // Target the video wrapper for full width
             const videoWrapper = document.querySelector(`.${styles.videoWrapper}`);
             if (videoWrapper instanceof HTMLElement) {
               videoWrapper.style.overflow = "hidden";
-              // Optionally adjust height
-              // videoWrapper.style.height = "calc(100vh - 75px)";
+              videoWrapper.style.width = "100%";
+              videoElement.style.position = "absolute"; // Ensure absolute positioning
+              videoWrapper.style.maxWidth = "none";
             }
 
-            // Target the video container if needed
+            // Ensure video container doesn't constrain width
             const videoContainer = document.querySelector(`.${styles.videoContainer}`);
             if (videoContainer instanceof HTMLElement) {
               videoContainer.style.overflow = "hidden";
+              videoContainer.style.width = "100%";
             }
           } else {
             // Regular positioning
