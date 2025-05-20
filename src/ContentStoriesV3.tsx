@@ -825,6 +825,10 @@ const ContentStoriesV3: React.FC<Props> = ({
       player.on('complete', () => {
         if (!isMountedRef.current) return;
 
+        // CRITICAL: Explicitly pause and mute the current video to stop any audio
+        player.pause();
+        player.setMute(true);
+
         // Auto-play next video
         if (index < mediaIds.length - 1) {
           const nextVideoEl = videoRefs.current[mediaIds[index + 1]];
@@ -1446,7 +1450,9 @@ registerVevComponent(ContentStoriesV3, {
     { selector: styles.videoWrapper, properties: ["box-shadow", "border-radius"] },
     { selector: styles.unmuteTextContainer, properties: ["background", "border-radius", "padding"] },
     { selector: styles.unmuteText, properties: ["color", "font-size"] },
-    { selector: styles.logo, properties: ["height"] }
+    { selector: styles.logo, properties: ["height"] },
+    { selector: styles.ctaImageContainer, properties: ["padding"] },
+    { selector: styles.ctaImage, properties: ["height"] }
   ],
   type: "both",
 });
