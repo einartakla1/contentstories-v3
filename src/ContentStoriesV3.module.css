@@ -435,7 +435,7 @@
 
 .customCaptionsContainer {
   position: absolute;
-  bottom: 200px;
+  bottom: 160px;
   left: 0;
   right: 0;
   width: 100%;
@@ -448,7 +448,7 @@
 }
 
 .customCaptions {
-  font-family: Med21;
+  font-family: Book20;
   font-size: 16px;
   line-height: 1.3;
   background-color: rgba(0, 0, 0, 0.5);
@@ -456,7 +456,7 @@
   padding: 5px 8px;
   border-radius: 4px;
   text-align: center;
-  max-width: 80%;
+  max-width: 100%;
   margin: 0 auto;
   /* Ensure it's visible above other elements */
   z-index: 30;
@@ -508,6 +508,113 @@
   padding: 0 20px;
   box-sizing: border-box;
 }
+
+
+/* Wrapper for the disclaimer components */
+.disclaimerWrapper {
+  position: absolute;
+  top: max(env(safe-area-inset-top, 0) + 10px, 20px);
+  left: max(env(safe-area-inset-left, 0) + 10px, 20px);
+  z-index: 50;
+  pointer-events: none;
+  /* Let initial clicks pass through to video */
+}
+
+/* Disclaimer button styles */
+.disclaimerButton {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: auto;
+  padding: 2px 4px 2px 6px;
+  background-color: rgba(70, 70, 70, 0.367);
+  border-radius: 4px;
+  cursor: pointer;
+  color: white;
+  transition: background 0.2s;
+  pointer-events: auto;
+  /* Enable clicks on button */
+}
+
+.disclaimerButton:hover {
+  background-color: rgba(70, 70, 70, 0.5);
+}
+
+.disclaimerButtonActive {
+  background-color: rgba(70, 70, 70, 0.6);
+}
+
+.disclaimerHeading {
+  color: white;
+  font-family: Book20;
+  font-size: 10px;
+  white-space: nowrap;
+  margin-right: 8px;
+}
+
+.disclaimerCloseIcon {
+  font-size: 18px;
+  line-height: 16px;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Disclaimer overlay */
+.disclaimerOverlay {
+  position: relative;
+  max-width: 200px;
+  background-color: rgba(0, 0, 0, 0.7);
+  z-index: 30;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  box-sizing: border-box;
+  pointer-events: auto;
+  /* Enable clicks on overlay */
+}
+
+.disclaimerContent {
+  width: 100%;
+  /* Adjust to fit within video container */
+  max-height: 70%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+}
+
+.disclaimerHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: #13264A;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.disclaimerHeadingLarge {
+  color: white;
+  font-family: Book20;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.disclaimerCloseIconLarge {
+  font-size: 24px;
+  color: white;
+  cursor: pointer;
+}
+
+.disclaimerBody {
+  overflow-y: auto;
+  color: white;
+  font-family: Book20;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+
 
 
 
@@ -593,7 +700,7 @@
   /* Default controls position for mobile */
   .controls {
     position: fixed;
-    top: max(env(safe-area-inset-top, 0) + 70px, 70px) !important;
+    top: max(env(safe-area-inset-top, 0) + 50px, 50px) !important;
     right: max(env(safe-area-inset-right, 0) + 10px, 20px) !important;
     z-index: 20;
   }
@@ -681,4 +788,24 @@
     /* Hide nav buttons on mobile, rely on scrolling */
   }
 
+  .disclaimerWrapper {
+    top: max(env(safe-area-inset-top, 0) + 50px, 50px);
+    left: max(env(safe-area-inset-left, 0) + 10px, 20px);
+  }
+
+  .disclaimerButton {
+    padding: 6px 6px;
+  }
+
+
+  .disclaimerBody {
+    max-height: calc(80% - 65px);
+  }
+
+}
+
+/* DNApp specific adjustments */
+[data-dnapp="true"] .disclaimerWrapper {
+  /* Adjust position to account for DNApp spacing */
+  top: max(env(safe-area-inset-top, 0) + 100px, 100px);
 }

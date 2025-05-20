@@ -38,7 +38,10 @@ type Props = {
   titleDisplayTime: number;
   ctaDisplayTime: number;
   showUnmuteTextTime: number;
-  testDNApp: boolean; // Add this new property
+  testDNApp: boolean;
+  showDisclaimer: boolean;
+  disclaimerHeading: string;
+  disclaimerText: string;
 };
 
 // Caption type definition
@@ -55,7 +58,7 @@ const formatTime = (seconds: number): string => {
 };
 
 const DNAPP_BOTTOM_SPACING = 80; // Change from 100px to 80px
-const CAPTION_TOLERANCE = 0.3; // 300ms tolerance for caption matching
+const CAPTION_TOLERANCE = 0.1; // 100ms tolerance for caption matching
 
 
 
@@ -71,7 +74,11 @@ const ContentStoriesV3: React.FC<Props> = ({
   titleDisplayTime,
   ctaDisplayTime,
   showUnmuteTextTime,
-  testDNApp
+  testDNApp,
+  showDisclaimer,
+  disclaimerHeading,
+  disclaimerText
+
 }) => {
   // Core state
   const [mediaIds, setMediaIds] = useState<string[]>([]);
@@ -93,6 +100,8 @@ const ContentStoriesV3: React.FC<Props> = ({
   });
   const [showUnmuteText, setShowUnmuteText] = useState<boolean>(true);
   const [showingUnmuteTextForVideos, setShowingUnmuteTextForVideos] = useState<Set<string>>(new Set());
+  const [videosWithDisclaimerOpen, setVideosWithDisclaimerOpen] = useState<Set<string>>(new Set());
+
 
   // Cache
   const _fetchCache = new Map<string, any>();
@@ -123,6 +132,7 @@ const ContentStoriesV3: React.FC<Props> = ({
 
 
   const { disabled } = useEditorState();
+
 
   // SRT parser function
   const fetchAndParseSRT = async (url: string, mediaId: string) => {
@@ -587,6 +597,7 @@ const ContentStoriesV3: React.FC<Props> = ({
       }
     }
   };
+
 
   // Set up intersection observer to detect current video
   useEffect(() => {
@@ -1229,6 +1240,33 @@ const ContentStoriesV3: React.FC<Props> = ({
     return inputCtaLink;
   };
 
+  const toggleDisclaimerForVideo = (mediaId: string, e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent video click from triggering
+
+    setVideosWithDisclaimerOpen(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(mediaId)) {
+        newSet.delete(mediaId);
+      } else {
+        newSet.add(mediaId);
+      }
+      return newSet;
+    });
+  };
+
+  // Close disclaimer for a specific video
+  const closeDisclaimerForVideo = (mediaId: string) => {
+    setVideosWithDisclaimerOpen(prev => {
+      const newSet = new Set(prev);
+      newSet.delete(mediaId);
+      return newSet;
+    });
+  };
+
+
+
+
+
   return (
     <>
       <Helmet>
@@ -1383,8 +1421,50 @@ const ContentStoriesV3: React.FC<Props> = ({
                   className={`${styles.seekBarClickArea} ${isInDNApp ? styles.dnAppSeekBarClickArea : ''}`}
                   onClick={(e) => handleSeek(e, mediaId)}
                 />
-              </div>
+
+                {/* PLACE THE DISCLAIMER HERE - INSIDE videoWrapper, after all other UI elements */}
+                {showDisclaimer && (
+                  <div className={styles.disclaimerWrapper}>
+                    {/* Disclaimer Button */}
+                    <div
+                      className={`${styles.disclaimerButton} ${videosWithDisclaimerOpen.has(mediaId) ? styles.disclaimerButtonActive : ''}`}
+                      onClick={(e) => toggleDisclaimerForVideo(mediaId, e)}
+                    >
+                      <span className={styles.disclaimerHeading}>{disclaimerHeading}</span>
+                      {videosWithDisclaimerOpen.has(mediaId) ? (
+                        <span className={styles.disclaimerCloseIcon}>×</span>
+                      ) : (
+                        <ChevronDown size={16} color="#fff" />
+                      )}
+                    </div>
+
+                    {/* Disclaimer overlay - shown only when open */}
+                    {videosWithDisclaimerOpen.has(mediaId) && (
+                      <div
+                        className={styles.disclaimerOverlay}
+                        onClick={() => closeDisclaimerForVideo(mediaId)}
+                      >
+                        <div
+                          className={styles.disclaimerContent}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+
+                          <div className={styles.disclaimerBody}>
+                            {disclaimerText.split('\n').map((line, i) => (
+                              <React.Fragment key={i}>
+                                {i > 0 && <br />}
+                                {line}
+                              </React.Fragment>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div> {/* END OF VIDEOWRAPPER */}
             </div>
+
           ))}
         </div>
 
@@ -1418,6 +1498,7 @@ const ContentStoriesV3: React.FC<Props> = ({
             </>
           )}
         </div>
+
       </div>
     </>
   );
@@ -1437,7 +1518,10 @@ registerVevComponent(ContentStoriesV3, {
     { name: "inputCtaLink", type: "string" },
     { name: "ctaDisplayTime", type: "number", initialValue: 5 },
     { name: "showUnmuteTextTime", type: "number", initialValue: 5, description: "Time in seconds to show unmute text (0 = disabled)" },
-    { name: "testDNApp", type: "boolean", initialValue: false, description: "Enable to test DNApp mode (for development only)" }
+    { name: "testDNApp", type: "boolean", initialValue: false, description: "Enable to test DNApp mode (for development only)" },
+    { name: "showDisclaimer", type: "boolean", initialValue: false, description: "Show disclaimer message" },
+    { name: "disclaimerHeading", type: "string", initialValue: "", description: "Title for the disclaimer" },
+    { name: "disclaimerText", type: "string", initialValue: "", description: "Full text for the disclaimer popup" }
   ],
   editableCSS: [
     { selector: styles.container, properties: ["background"] },
@@ -1452,7 +1536,12 @@ registerVevComponent(ContentStoriesV3, {
     { selector: styles.unmuteText, properties: ["color", "font-size"] },
     { selector: styles.logo, properties: ["height"] },
     { selector: styles.ctaImageContainer, properties: ["padding"] },
-    { selector: styles.ctaImage, properties: ["height"] }
+    { selector: styles.ctaImage, properties: ["height"] },
+    { selector: styles.disclaimerButton, properties: ["background", "border-radius", "padding"] },
+    { selector: styles.disclaimerHeading, properties: ["color", "font-size"] },
+    { selector: styles.disclaimerContent, properties: ["background", "border-radius", "padding"] },
+    { selector: styles.disclaimerBody, properties: ["color", "font-size"] }
+
   ],
   type: "both",
 });
