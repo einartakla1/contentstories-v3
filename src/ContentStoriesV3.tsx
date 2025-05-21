@@ -1263,6 +1263,17 @@ const ContentStoriesV3: React.FC<Props> = ({
     });
   };
 
+  const formatTitle = (title: string): string => {
+    if (!title) return '';
+
+    // Check if the title contains kicker markers (##)
+    if (title.includes('##')) {
+      // Remove the first ## completely and replace the second ## with a space
+      return title.replace('##', '').replace('##', ' ');
+    }
+
+    return title;
+  };
 
 
 
@@ -1396,7 +1407,7 @@ const ContentStoriesV3: React.FC<Props> = ({
                     {/* Title display */}
                     {showTitles[mediaId] && (
                       <div className={styles.title}>
-                        {titles[mediaId] || ''}
+                        {formatTitle(titles[mediaId] || '')}
                       </div>
                     )}
                     <div className={styles.length}>
@@ -1540,7 +1551,8 @@ registerVevComponent(ContentStoriesV3, {
     { selector: styles.disclaimerButton, properties: ["background", "border-radius", "padding"] },
     { selector: styles.disclaimerHeading, properties: ["color", "font-size"] },
     { selector: styles.disclaimerContent, properties: ["background", "border-radius", "padding"] },
-    { selector: styles.disclaimerBody, properties: ["color", "font-size"] }
+    { selector: styles.disclaimerBody, properties: ["color", "font-size"] },
+    { selector: styles.customCaptions, properties: ["font-size"] }
 
   ],
   type: "both",
