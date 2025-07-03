@@ -44,7 +44,7 @@
 
 .logo {
   height: 25px;
-  max-width: 100px;
+  max-width: 150px;
   align-items: center;
   justify-content: center;
 }
@@ -462,7 +462,6 @@
   z-index: 30;
 }
 
-
 .dnAppOverlay {
   left: max(env(safe-area-inset-left, 0) + 20px, 20px) !important;
   right: 25% !important;
@@ -508,7 +507,6 @@
   padding: 0 20px;
   box-sizing: border-box;
 }
-
 
 /* Wrapper for the disclaimer components */
 .disclaimerWrapper {
@@ -614,9 +612,70 @@
   line-height: 1.4;
 }
 
+/* NEW VIDEO ALIGNMENT CLASSES FOR MOBILE */
 
+/* Crop Top Alignment (Current behavior - keep bottom visible) */
+.cropTopAlignment {
+  /* Container alignment */
+  align-items: flex-end;
+  /* Bottom alignment for mobile */
+  scroll-snap-align: end;
+  /* Bottom snap for mobile */
+}
 
+.cropTopWrapper {
+  width: 100vw !important;
+  height: 100dvh !important;
+  max-height: none;
+  max-width: none;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  border-radius: 0;
+}
 
+/* Crop Bottom Alignment (Keep top visible) */
+.cropBottomAlignment {
+  /* Container alignment */
+  align-items: flex-start;
+  /* Top alignment for mobile */
+  scroll-snap-align: start;
+  /* Top snap for mobile */
+}
+
+.cropBottomWrapper {
+  width: 100vw !important;
+  height: 100dvh !important;
+  max-height: none;
+  max-width: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  border-radius: 0;
+}
+
+/* Maintain Aspect Ratio Alignment (Don't fill horizontally if not enough space) */
+.maintainAspectAlignment {
+  /* Container alignment */
+  align-items: center;
+  /* Center alignment */
+  scroll-snap-align: center;
+  /* Center snap */
+}
+
+.maintainAspectWrapper {
+  /* Calculate the optimal size to maintain 9:16 aspect ratio */
+  width: min(100vw, calc(100dvh * 9 / 16)) !important;
+  height: min(100dvh, calc(100vw * 16 / 9)) !important;
+  max-height: none;
+  max-width: none;
+  position: relative;
+  border-radius: 0;
+  /* Center the wrapper if it doesn't fill the full width */
+  margin: 0 auto;
+}
 
 /* Mobile styles */
 @media (max-width: 768px) {
@@ -627,16 +686,13 @@
     scroll-snap-type: y mandatory;
   }
 
-  /* Force video container to fill 100% of viewport with no margins */
+  /* Base video container for mobile - will be modified by alignment classes */
   .videoContainer {
     height: 100dvh !important;
     overflow: hidden !important;
     display: flex;
     justify-content: center;
-    align-items: flex-end;
-    /* Bottom alignment for mobile */
-    scroll-snap-align: end;
-    /* Bottom snap for mobile */
+    scroll-snap-stop: always;
   }
 
   .loadingIndicator .spinner {
@@ -645,30 +701,17 @@
     border-width: 4px;
   }
 
+  /* Base video wrapper for mobile - will be modified by alignment classes */
   .videoWrapper {
-    width: 100vw !important;
-    height: 100dvh !important;
-    /* Use dvh for wrapper height too */
-    max-height: none;
-    max-width: none;
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    border-radius: 0;
+    /* Default values - will be overridden by alignment classes */
   }
 
   .video {
-    /* Force fill ALL available space, cropping as needed */
+    /* Default video styling - alignment will be handled by the applyVideoAlignment function */
     width: 100% !important;
     height: 100% !important;
     object-fit: cover !important;
     position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    min-width: 100%;
-    min-height: 100%;
   }
 
   /* Safe area for UI elements - ensures they stay in visible region */
@@ -693,9 +736,6 @@
     padding-top: 10px;
     padding-bottom: 15px;
   }
-
-  /* Set special positioning for DNApp mute button */
-
 
   /* Default controls position for mobile */
   .controls {
@@ -731,9 +771,6 @@
     white-space: nowrap;
   }
 
-
-
-
   /* Video overlay - ensure full width but with proper padding and safe areas */
   .videoOverlay {
     position: absolute;
@@ -745,9 +782,6 @@
     padding: 0;
     /* No padding needed with absolute positioning */
   }
-
-
-
 
   /* Title container - ensure full width */
   .titleContainer {
@@ -780,9 +814,6 @@
     width: auto;
   }
 
-  /* DNApp-specific adjustments with safe areas */
-
-
   .navigationButtons {
     display: none;
     /* Hide nav buttons on mobile, rely on scrolling */
@@ -797,11 +828,30 @@
     padding: 6px 6px;
   }
 
-
   .disclaimerBody {
     max-height: calc(80% - 65px);
   }
 
+  /* Alignment-specific adjustments for mobile overlays and controls */
+
+
+
+  /* Maintain Aspect - UI should stay at bottom but accommodate smaller video */
+  .maintainAspectAlignment .videoOverlay {
+    /* Keep normal bottom positioning */
+  }
+
+  .maintainAspectAlignment .seekBarContainer {
+    /* Keep normal bottom positioning */
+  }
+
+  .maintainAspectAlignment .seekBarClickArea {
+    /* Keep normal bottom positioning */
+  }
+
+  .maintainAspectAlignment .customCaptionsContainer {
+    /* Keep normal bottom positioning */
+  }
 }
 
 /* DNApp specific adjustments */

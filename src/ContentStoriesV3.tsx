@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from "react";
 import { registerVevComponent, useEditorState } from "@vev/react";
 import { VideoIcon } from './icons';
@@ -42,6 +43,8 @@ type Props = {
   showDisclaimer: boolean;
   disclaimerHeading: string;
   disclaimerText: string;
+  // NEW PROP FOR VIDEO ALIGNMENT
+  videoAlignment: 'crop-top' | 'crop-bottom' | 'maintain-aspect';
 };
 
 // Caption type definition
@@ -60,8 +63,6 @@ const formatTime = (seconds: number): string => {
 const DNAPP_BOTTOM_SPACING = 80; // Change from 100px to 80px
 const CAPTION_TOLERANCE = 0.1; // 100ms tolerance for caption matching
 
-
-
 const ContentStoriesV3: React.FC<Props> = ({
   initialPlaylistId,
   initialMediaId,
@@ -77,8 +78,8 @@ const ContentStoriesV3: React.FC<Props> = ({
   testDNApp,
   showDisclaimer,
   disclaimerHeading,
-  disclaimerText
-
+  disclaimerText,
+  videoAlignment = 'crop-top' // Default to current behavior
 }) => {
   // Core state
   const [mediaIds, setMediaIds] = useState<string[]>([]);
@@ -102,10 +103,8 @@ const ContentStoriesV3: React.FC<Props> = ({
   const [showingUnmuteTextForVideos, setShowingUnmuteTextForVideos] = useState<Set<string>>(new Set());
   const [videosWithDisclaimerOpen, setVideosWithDisclaimerOpen] = useState<Set<string>>(new Set());
 
-
   // Cache
   const _fetchCache = new Map<string, any>();
-
 
   // Caption state
   const [captionsData, setCaptionsData] = useState<{ [key: string]: Caption[] }>({});
@@ -130,8 +129,138 @@ const ContentStoriesV3: React.FC<Props> = ({
   const captionFetchAttemptsRef = useRef<{ [key: string]: number }>({});
   const initialLoadingRef = useRef(false);
 
-
   const { disabled } = useEditorState();
+
+  // Helper function to get alignment classes
+  const getVideoContainerClasses = (): string => {
+    let classes = styles.videoContainer;
+
+    if (isMobile) {
+      switch (videoAlignment) {
+        case 'crop-top':
+          classes += ` ${styles.cropTopAlignment}`;
+          break;
+        case 'crop-bottom':
+          classes += ` ${styles.cropBottomAlignment}`;
+          break;
+        case 'maintain-aspect':
+          classes += ` ${styles.maintainAspectAlignment}`;
+          break;
+        default:
+          classes += ` ${styles.cropTopAlignment}`;
+      }
+    }
+
+    if (isInDNApp) {
+      classes += ` ${styles.dnAppVideoContainer}`;
+    }
+
+    return classes;
+  };
+
+  const getVideoWrapperClasses = (): string => {
+    let classes = styles.videoWrapper;
+
+    if (isMobile) {
+      switch (videoAlignment) {
+        case 'crop-top':
+          classes += ` ${styles.cropTopWrapper}`;
+          break;
+        case 'crop-bottom':
+          classes += ` ${styles.cropBottomWrapper}`;
+          break;
+        case 'maintain-aspect':
+          classes += ` ${styles.maintainAspectWrapper}`;
+          break;
+        default:
+          classes += ` ${styles.cropTopWrapper}`;
+      }
+    }
+
+    if (isInDNApp) {
+      classes += ` ${styles.dnAppVideoWrapper}`;
+    }
+
+    return classes;
+  };
+
+  // Apply video alignment styles
+  const applyVideoAlignment = (videoElement: HTMLElement, mediaId: string) => {
+    if (!isMobile) {
+      // Desktop behavior remains the same
+      videoElement.style.objectFit = "cover";
+      videoElement.style.objectPosition = "center bottom";
+      videoElement.style.top = "auto";
+      videoElement.style.bottom = "0";
+      return;
+    }
+
+    // Mobile alignment logic
+    switch (videoAlignment) {
+      case 'crop-top':
+        // Current behavior - crop from top, keep bottom visible
+        videoElement.style.objectFit = "cover";
+        videoElement.style.objectPosition = "center bottom";
+        videoElement.style.width = "100%";
+        videoElement.style.height = "100%";
+        videoElement.style.position = "absolute";
+        videoElement.style.bottom = "0";
+        videoElement.style.top = "auto";
+        break;
+
+      case 'crop-bottom':
+        // Crop from bottom, keep top visible
+        videoElement.style.objectFit = "cover";
+        videoElement.style.objectPosition = "center top";
+        videoElement.style.width = "100%";
+        videoElement.style.height = "100%";
+        videoElement.style.position = "absolute";
+        videoElement.style.top = "0";
+        videoElement.style.bottom = "auto";
+        break;
+
+      case 'maintain-aspect':
+        // Maintain 9:16 aspect ratio, don't fill horizontally if not enough space
+        videoElement.style.objectFit = "contain";
+        videoElement.style.objectPosition = "center center";
+        videoElement.style.width = "100%";
+        videoElement.style.height = "100%";
+        videoElement.style.position = "absolute";
+        videoElement.style.top = "50%";
+        videoElement.style.left = "50%";
+        videoElement.style.transform = "translate(-50%, -50%)";
+        break;
+
+      default:
+        // Fallback to crop-top
+        videoElement.style.objectFit = "cover";
+        videoElement.style.objectPosition = "center bottom";
+        videoElement.style.width = "100%";
+        videoElement.style.height = "100%";
+        videoElement.style.position = "absolute";
+        videoElement.style.bottom = "0";
+        videoElement.style.top = "auto";
+    }
+
+    // DNApp specific adjustments
+    if (isInDNApp && videoAlignment !== 'maintain-aspect') {
+      // For DNApp, adjust the transform based on alignment
+      if (videoAlignment === 'crop-bottom') {
+        // For crop-bottom, we don't want to pull the video up
+        videoElement.style.transform = "translateY(0px)";
+      } else {
+        // For crop-top, pull the video up as before
+        videoElement.style.transform = "translateY(-75px)";
+      }
+
+      const playerContainer = document.querySelector(`#jwplayer-${mediaId}`);
+      if (playerContainer instanceof HTMLElement) {
+        playerContainer.style.overflow = "hidden";
+        playerContainer.style.width = "100%";
+        playerContainer.style.maxWidth = "none";
+      }
+    }
+  };
 
 
   // SRT parser function
@@ -849,65 +978,17 @@ const ContentStoriesV3: React.FC<Props> = ({
 
       // Ready event handler
       player.on('ready', () => {
+
         if (!isMountedRef.current) return;
 
         console.log(`Player ready for ${mediaId}`);
         setInitializedPlayers(prev => new Set([...prev, mediaId]));
         setPlayersReady(prev => new Set([...prev, mediaId]));
 
-
         const videoElement = document.querySelector(`#jwplayer-${mediaId} video`);
         if (videoElement instanceof HTMLElement) {
-          // Default setup - keep object-fit: cover to fill the container
-          videoElement.style.objectFit = "cover";
-          videoElement.style.objectPosition = "center bottom"; // Keep bottom alignment
-          videoElement.style.top = "auto";
-          videoElement.style.bottom = "0";
-
-          // Apply different settings for DNApp mode
-          if (isInDNApp) {
-            // Keep "cover" to maintain filling behavior while allowing cropping
-            // This maintains the bottom alignment while ensuring full width
-            videoElement.style.objectFit = "cover";
-
-            // This pulls the video up while maintaining bottom alignment
-            videoElement.style.transform = "translateY(-75px)";
-
-            // Set to 100% width to ensure the video spans the full container width
-            videoElement.style.width = "100%";
-            videoElement.style.maxWidth = "none";
-
-            // Make sure the video is positioned properly
-            videoElement.style.left = "0";
-            videoElement.style.right = "0";
-
-            // Also update the container for full width
-            const playerContainer = document.querySelector(`#jwplayer-${mediaId}`);
-            if (playerContainer instanceof HTMLElement) {
-              playerContainer.style.overflow = "hidden";
-              playerContainer.style.width = "100%";
-              playerContainer.style.maxWidth = "none";
-            }
-
-            // Target the video wrapper for full width
-            const videoWrapper = document.querySelector(`.${styles.videoWrapper}`);
-            if (videoWrapper instanceof HTMLElement) {
-              videoWrapper.style.overflow = "hidden";
-              videoWrapper.style.width = "100%";
-              videoElement.style.position = "absolute"; // Ensure absolute positioning
-              videoWrapper.style.maxWidth = "none";
-            }
-
-            // Ensure video container doesn't constrain width
-            const videoContainer = document.querySelector(`.${styles.videoContainer}`);
-            if (videoContainer instanceof HTMLElement) {
-              videoContainer.style.overflow = "hidden";
-              videoContainer.style.width = "100%";
-            }
-          } else {
-            // Regular positioning
-            videoElement.style.transform = "translateX(0%)";
-          }
+          // Apply the new alignment logic
+          applyVideoAlignment(videoElement, mediaId);
         }
 
 
@@ -1304,11 +1385,11 @@ const ContentStoriesV3: React.FC<Props> = ({
             <div
               key={mediaId}
               ref={el => videoRefs.current[mediaId] = el}
-              className={`${styles.videoContainer} ${isInDNApp ? styles.dnAppVideoContainer : ''}`}
+              className={getVideoContainerClasses()}
               data-index={index}
               data-mediaid={mediaId}
             >
-              <div className={`${styles.videoWrapper} ${isInDNApp ? styles.dnAppVideoWrapper : ''}`}>
+              <div className={getVideoWrapperClasses()}>
                 {/* Click layer for play/pause */}
                 <div
                   className={styles.videoClickLayer}
@@ -1532,13 +1613,26 @@ registerVevComponent(ContentStoriesV3, {
     { name: "testDNApp", type: "boolean", initialValue: false, description: "Enable to test DNApp mode (for development only)" },
     { name: "showDisclaimer", type: "boolean", initialValue: false, description: "Show disclaimer message" },
     { name: "disclaimerHeading", type: "string", initialValue: "", description: "Title for the disclaimer" },
-    { name: "disclaimerText", type: "string", initialValue: "", description: "Full text for the disclaimer popup" }
+    { name: "disclaimerText", type: "string", initialValue: "", description: "Full text for the disclaimer popup" },
+    {
+      name: "videoAlignment",
+      type: "select",
+      initialValue: "crop-top",
+      options: {
+        items: [
+          { label: "Crop Top (Keep Bottom)", value: "crop-top" },
+          { label: "Crop Bottom (Keep Top)", value: "crop-bottom" },
+          { label: "Maintain Aspect Ratio", value: "maintain-aspect" }
+        ]
+      },
+      description: "How videos should be aligned on mobile devices"
+    }
   ],
   editableCSS: [
     { selector: styles.container, properties: ["background"] },
     { selector: styles.wrapper, properties: ["background"] },
     { selector: styles.ctaBox, properties: ["background"] },
-    { selector: styles.ctaImageContainer, properties: ["background"] },
+    { selector: styles.ctaImageContainer, properties: ["background", "padding"] },
     { selector: styles.ctaContent, properties: ["color", "font-size"] },
     { selector: styles.title, properties: ["font-size"] },
     { selector: styles.length, properties: ["font-size"] },
@@ -1546,7 +1640,6 @@ registerVevComponent(ContentStoriesV3, {
     { selector: styles.unmuteTextContainer, properties: ["background", "border-radius", "padding"] },
     { selector: styles.unmuteText, properties: ["color", "font-size"] },
     { selector: styles.logo, properties: ["height"] },
-    { selector: styles.ctaImageContainer, properties: ["padding"] },
     { selector: styles.ctaImage, properties: ["height"] },
     { selector: styles.disclaimerButton, properties: ["background", "border-radius", "padding"] },
     { selector: styles.disclaimerHeading, properties: ["color", "font-size"] },
