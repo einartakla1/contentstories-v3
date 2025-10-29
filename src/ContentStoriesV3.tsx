@@ -38,6 +38,7 @@ type Props = {
   inputCtaImage: ImageProp;
   titleDisplayTime: number;
   ctaDisplayTime: number;
+  ctaTimingMode: 'from-end' | 'from-start';
   showUnmuteTextTime: number;
   testDNApp: boolean;
   showDisclaimer: boolean;
@@ -74,6 +75,7 @@ const ContentStoriesV3: React.FC<Props> = ({
   inputCtaImage,
   titleDisplayTime,
   ctaDisplayTime,
+  ctaTimingMode = 'from-end',
   showUnmuteTextTime,
   testDNApp,
   showDisclaimer,
@@ -116,6 +118,8 @@ const ContentStoriesV3: React.FC<Props> = ({
   const [pausedPlayers, setPausedPlayers] = useState<Set<string>>(new Set());
   const [initializedPlayers, setInitializedPlayers] = useState<Set<string>>(new Set());
   const [playersReady, setPlayersReady] = useState<Set<string>>(new Set());
+  const [customerNames, setCustomerNames] = useState<{ [key: string]: string }>({});
+
 
   // Refs
   const isMountedRef = useRef<boolean>(true);
@@ -542,6 +546,7 @@ const ContentStoriesV3: React.FC<Props> = ({
           // Check for custom parameters at the root level of the item
           const ctaText = item.cStoriesCtaText;
           const ctaLink = item.cStoriesCtaLink;
+          const customerName = item.customerName;
 
           if (ctaText || ctaLink) {
             console.log(`Found custom parameters for ${mediaId}: Text=${ctaText}, Link=${ctaLink}`);
@@ -553,6 +558,17 @@ const ContentStoriesV3: React.FC<Props> = ({
               }
             }));
           }
+
+          if (customerName) {
+            console.log(`Found customerName in playlist for ${mediaId}: ${customerName}`);
+            setCustomerNames(prev => ({
+              ...prev,
+              [mediaId]: customerName
+            }));
+          }
+
+
+
         });
 
         setMediaIds(orderedPlaylist.map((item: any) => item.mediaid));
@@ -575,7 +591,13 @@ const ContentStoriesV3: React.FC<Props> = ({
 
     // Update title/CTA visibility
     const shouldShowTitle = titleDisplayTime > 0 && position <= titleDisplayTime;
-    const shouldShowCta = ctaDisplayTime > 0 && position >= ctaDisplayTime;
+    // Modified CTA timing logic
+    const shouldShowCta = ctaDisplayTime > 0 && (
+      ctaTimingMode === 'from-end'
+        ? (duration - position) <= ctaDisplayTime
+        : position >= ctaDisplayTime
+    );
+
 
     if (showTitles[mediaId] !== shouldShowTitle) {
       setShowTitles(prev => ({ ...prev, [mediaId]: shouldShowTitle }));
@@ -904,6 +926,14 @@ const ContentStoriesV3: React.FC<Props> = ({
               text: ctaText || '',
               link: ctaLink || ''
             }
+          }));
+        }
+        // Check for customerName parameter
+        const customerName = videoItem.custom?.customerName;
+        if (customerName) {
+          setCustomerNames(prev => ({
+            ...prev,
+            [mediaId]: customerName
           }));
         }
       }
@@ -1358,24 +1388,63 @@ const ContentStoriesV3: React.FC<Props> = ({
 
 
 
+  const CTA_HEIGHT = 160;  // tweak anytime
+  const TITLE_HEIGHT = 110;
+  const EMPTY_HEIGHT = 110;
+
+  const CTA_HEIGHT_DNAPP = 250;   // if you want different spacing
+  const TITLE_HEIGHT_DNAPP = 210;
+  const EMPTY_HEIGHT_DNAPP = 210;
+
+  /** Pixels from bottom where captions should sit for a given mediaId */
+  const getCaptionOffset = (id: string): number => {
+    const ctaVisible = showCtaElements[id];
+    const titleVisible = showTitles[id];
+
+    if (isInDNApp) {
+      if (ctaVisible) return CTA_HEIGHT_DNAPP;
+      if (titleVisible) return TITLE_HEIGHT_DNAPP;
+      return EMPTY_HEIGHT_DNAPP;
+    }
+
+    // Default (non-DNApp)
+    if (ctaVisible) return CTA_HEIGHT;
+    if (titleVisible) return TITLE_HEIGHT;
+    return EMPTY_HEIGHT;
+  };
+
 
   return (
     <>
       <Helmet>
         <link rel="stylesheet" href="https://static1.dn.no/dn/static/assets/css/nhstfonts.css" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+        <meta name="theme-color" content="#13264A" />
+        <meta name="theme-color" content="#13264A" media="(prefers-color-scheme: light)" />
+        <meta name="theme-color" content="#13264A" media="(prefers-color-scheme: dark)" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black" />
       </Helmet>
 
-      <div className={styles.container}>
+      <div
+        className={styles.container}
+        data-dnapp={isInDNApp || testDNApp ? 'true' : undefined}
+      >
         {/* Top Bar */}
         <div className={styles.topBar}>
-          <span className={styles.topText}>{topText}</span>
-          {inputLogoLink ? (
-            <a href={inputLogoLink} target="_blank" rel="noopener noreferrer">
+          <span className={styles.topText}>
+            {topText}
+            {activeIndex !== null && customerNames[mediaIds[activeIndex]] && (
+              <> – {customerNames[mediaIds[activeIndex]]}</>
+            )}
+          </span>
+          {logo?.url && (
+            inputLogoLink ? (
+              <a href={inputLogoLink} target="_blank" rel="noopener noreferrer">
+                <img src={logo?.url} alt="Logo" className={styles.logo} />
+              </a>
+            ) : (
               <img src={logo?.url} alt="Logo" className={styles.logo} />
-            </a>
-          ) : (
-            <img src={logo?.url} alt="Logo" className={styles.logo} />
+            )
           )}
         </div>
 
@@ -1406,6 +1475,7 @@ const ContentStoriesV3: React.FC<Props> = ({
                 {(() => {
                   if (!captionsData[mediaId]) return null;
 
+                  const bottomPx = getCaptionOffset(mediaId);
                   const position = currentTimes[mediaId] || 0;
                   const caption = captionsData[mediaId].find(cap =>
                     position >= cap.start - CAPTION_TOLERANCE && position <= cap.end + CAPTION_TOLERANCE
@@ -1415,7 +1485,11 @@ const ContentStoriesV3: React.FC<Props> = ({
                   if (!caption) return null;
 
                   return (
-                    <div className={`${styles.customCaptionsContainer} ${isInDNApp ? styles.dnAppCustomCaptionsContainer : ''}`}>
+                    <div
+                      className={`${styles.customCaptionsContainer} ${isInDNApp ? styles.dnAppCustomCaptionsContainer : ''
+                        }`}
+                      style={{ bottom: `${bottomPx}px` }}
+                    >
                       <div className={styles.customCaptions}>
                         {caption.text.split('\n').map((line, i) => (
                           <React.Fragment key={i}>
@@ -1608,7 +1682,19 @@ registerVevComponent(ContentStoriesV3, {
     { name: "inputCtaImage", type: "image" },
     { name: "inputCtaTekst", type: "string" },
     { name: "inputCtaLink", type: "string" },
-    { name: "ctaDisplayTime", type: "number", initialValue: 5 },
+    { name: "ctaDisplayTime", type: "number", initialValue: 5, description: "Ammount of seconds from the end of each video cta should be displayed(0 = disabled)" },
+    {
+      name: "ctaTimingMode",
+      type: "select",
+      initialValue: "from-end",
+      options: {
+        items: [
+          { label: "From End of Video", value: "from-end" },
+          { label: "From Start of Video", value: "from-start" }
+        ]
+      },
+      description: "When to show CTA during video playback"
+    },
     { name: "showUnmuteTextTime", type: "number", initialValue: 5, description: "Time in seconds to show unmute text (0 = disabled)" },
     { name: "testDNApp", type: "boolean", initialValue: false, description: "Enable to test DNApp mode (for development only)" },
     { name: "showDisclaimer", type: "boolean", initialValue: false, description: "Show disclaimer message" },

@@ -127,6 +127,11 @@
   cursor: pointer;
 }
 
+
+
+
+
+
 /* Title and info overlay */
 .videoOverlay {
   position: absolute;
@@ -445,6 +450,7 @@
   z-index: 60;
   padding: 0 20px;
   box-sizing: border-box;
+  transition: bottom .25s ease-in-out;
 }
 
 .customCaptions {
@@ -677,6 +683,27 @@
   margin: 0 auto;
 }
 
+.dynamicCaptionsContainer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 60;
+  padding: 0 20px;
+  box-sizing: border-box;
+  transition: bottom 0.3s ease;
+}
+
+.dynamicTitleContainer {
+  position: relative;
+  transition: all 0.3s ease;
+}
+
+
+
 /* Mobile styles */
 @media (max-width: 768px) {
   .wrapper {
@@ -685,6 +712,9 @@
     overflow-y: auto;
     scroll-snap-type: y mandatory;
   }
+
+
+
 
   /* Base video container for mobile - will be modified by alignment classes */
   .videoContainer {
@@ -832,8 +862,9 @@
     max-height: calc(80% - 65px);
   }
 
-  /* Alignment-specific adjustments for mobile overlays and controls */
-
+  .dynamicCaptionsContainer {
+    padding: 0 20px;
+  }
 
 
   /* Maintain Aspect - UI should stay at bottom but accommodate smaller video */
@@ -854,8 +885,60 @@
   }
 }
 
-/* DNApp specific adjustments */
-[data-dnapp="true"] .disclaimerWrapper {
-  /* Adjust position to account for DNApp spacing */
-  top: max(env(safe-area-inset-top, 0) + 100px, 100px);
+[data-dnapp="true"] .dynamicCaptionsContainer {
+  padding: 0 max(env(safe-area-inset-left, 0) + 20px, 20px) 0 20px;
 }
+
+/* Force container to top - no spacing */
+[data-dnapp="true"] .container {
+  padding-top: 0 !important;
+  margin-top: 0 !important;
+  position: relative !important;
+  top: 0 !important;
+}
+
+/* Force wrapper to top */
+[data-dnapp="true"] .wrapper {
+  padding-top: 0 !important;
+  margin-top: 0 !important;
+}
+
+/* TopBar flush to top */
+[data-dnapp="true"] .topBar {
+  top: 0 !important;
+  margin-top: 0 !important;
+  padding-top: 10px !important;
+}
+
+/* Ensure video containers start at top */
+[data-dnapp="true"] .videoContainer {
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+}
+
+/* Position controls below topBar */
+[data-dnapp="true"] .controls {
+  top: max(env(safe-area-inset-top, 0) + 0px, 0px) !important;
+}
+
+/* Position disclaimer below topBar (same level as controls) */
+[data-dnapp="true"] .disclaimerWrapper {
+  top: max(env(safe-area-inset-top, 0) + 0px, 0px) !important;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════
+   SUMMARY OF ALL DNAPP POSITIONING:
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/*
+TOP ELEMENTS:
+- topBar:        0px + 10px padding
+- controls:      60px from top
+- disclaimer:    60px from top
+
+BOTTOM ELEMENTS (already fixed):
+- videoOverlay:  safe-area-bottom + 40px
+- seekBar:       safe-area-bottom + 20px
+- captions:      safe-area-bottom + 250px
+*/
