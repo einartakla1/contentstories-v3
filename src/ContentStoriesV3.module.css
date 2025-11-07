@@ -7,6 +7,24 @@
   --overlay-bottom: 40px;
   --seekbar-bottom: 20px;
   --seekbar-click-bottom: 12px;
+  background-color: #808080;
+}
+
+html,
+body {
+  background-color: #13264A;
+  overscroll-behavior-y: none;
+  /* prevents pull-to-refresh highlight */
+}
+
+.container,
+.wrapper {
+  background-color: inherit;
+}
+
+.video {
+  background-color: #13264A !important;
+  /* prevent Safari blending from video edge */
 }
 
 .container {
@@ -918,12 +936,12 @@
 
 /* Position controls below topBar */
 [data-dnapp="true"] .controls {
-  top: max(env(safe-area-inset-top, 0) + 0px, 0px) !important;
+  top: max(env(safe-area-inset-top, 0) + 40px, 40px) !important;
 }
 
 /* Position disclaimer below topBar (same level as controls) */
 [data-dnapp="true"] .disclaimerWrapper {
-  top: max(env(safe-area-inset-top, 0) + 0px, 0px) !important;
+  top: max(env(safe-area-inset-top, 0) + 40px, 40px) !important;
 }
 
 

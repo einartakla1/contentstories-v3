@@ -1422,7 +1422,7 @@ const ContentStoriesV3: React.FC<Props> = ({
         <meta name="theme-color" content="#13264A" />
         <meta name="theme-color" content="#13264A" media="(prefers-color-scheme: light)" />
         <meta name="theme-color" content="#13264A" media="(prefers-color-scheme: dark)" />
-        <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
       </Helmet>
 
       <div
